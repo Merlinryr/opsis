@@ -1,9 +1,11 @@
-//! WebAR core. Phase 1 of M01: CPU reference front end (ground truth for the GPU passes).
+//! WebAR core. M01: GPU front end (phase 1) and ground-plane SLAM (phase 2).
 
 pub mod fast;
+pub mod geom;
 pub mod image;
 pub mod orb;
 pub mod readback;
+pub mod slam;
 #[cfg(target_arch = "wasm32")]
 pub mod gpu;
 #[cfg(target_arch = "wasm32")]
@@ -26,6 +28,45 @@ pub struct FrontEnd {
 impl Default for FrontEnd {
     fn default() -> Self {
         // shortcut: starting values, not tuned on real sequences; revisit in M01 phase 5.
-        Self { levels: 4, scale: 1.44, fast_threshold: 20, max_keypoints: 500, grid: (6, 8) }
+        Self { levels: 4, scale: 1.44, fast_threshold: Self::DEFAULT_THRESHOLD, max_keypoints: 500, grid: (6, 8) }
+    }
+}
+
+impl FrontEnd {
+    const MIN_THRESHOLD: u8 = 7;
+    const DEFAULT_THRESHOLD: u8 = 20;
+
+    /// Next frame's FAST threshold from this frame's kept keypoint count: lower it fast on
+    /// low-texture scenes (grey floors), drift back up to the default while the budget is full.
+    /// Never above the default: on scenes whose corners share one contrast, a step up can drop
+    /// every corner at once.
+    pub fn adapt(&self, kept: usize) -> u8 {
+        let t = self.fast_threshold;
+        if kept < self.max_keypoints * 4 / 5 {
+            t.saturating_sub(2).max(Self::MIN_THRESHOLD)
+        } else if kept >= self.max_keypoints {
+            (t + 1).min(Self::DEFAULT_THRESHOLD.max(t))
+        } else {
+            t
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrontEnd;
+
+    #[test]
+    fn threshold_adapts_within_bounds() {
+        let mut cfg = FrontEnd::default();
+        for _ in 0..20 {
+            cfg.fast_threshold = cfg.adapt(10);
+        }
+        assert_eq!(cfg.fast_threshold, 7, "floors at the minimum on low texture");
+        for _ in 0..50 {
+            cfg.fast_threshold = cfg.adapt(cfg.max_keypoints);
+        }
+        assert_eq!(cfg.fast_threshold, 20, "returns to the default while saturated, no higher");
+        assert_eq!(cfg.adapt(450), 20, "steady inside the band");
     }
 }

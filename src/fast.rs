@@ -196,3 +196,26 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod line_tests {
+    use super::*;
+
+    /// FAST-9 must not fire on thin straight lines (tile grout), whatever their slant.
+    #[test]
+    fn no_corners_on_thin_lines() {
+        for slope in [0.0f32, 0.05, 0.1, 0.2, 0.4] {
+            for contrast in [40.0f32, 80.0] {
+                let mut g = Gray::new(96, 64);
+                for y in 0..64 {
+                    for x in 0..96 {
+                        // anti-aliased ~1.5 px dark line through (0, 30)
+                        let d = ((y as f32 - 30.0 - slope * x as f32) / (1.0 + slope * slope).sqrt()).abs();
+                        g.data[y * 96 + x] = (200.0 - contrast * (1.25 - d).clamp(0.0, 1.0)) as u8;
+                    }
+                }
+                assert!(detect(&[g], 1.44, 20, 3).is_empty(), "slope {slope} contrast {contrast}");
+            }
+        }
+    }
+}

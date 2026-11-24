@@ -5,7 +5,10 @@ use crate::fast;
 use crate::gpu::{Gpu, Pass};
 use crate::image::{self, Gray};
 use crate::orb::{BORDER, hamming};
+use crate::geom::camera_from_orientation;
 use crate::readback::{self, Level};
+use crate::slam::{Intrinsics, Slam};
+use std::cell::{Cell, RefCell};
 use crate::{webgl::Gl, webgpu::Wgpu};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -125,19 +128,29 @@ enum Backend {
     Gpu(Wgpu),
 }
 
-/// Live front end for the camera page: one RGBA frame in, keypoints out.
+/// Live tracker for the camera page: one RGBA frame + sensor angles in, keypoints out;
+/// the pose is read with `pose()`.
 #[wasm_bindgen]
 pub struct Tracker {
     backend: Backend,
-    cfg: FrontEnd,
+    /// Its FAST threshold adapts per frame to the scene's texture.
+    cfg: Cell<FrontEnd>,
+    fov: f32,
+    /// Created on the first frame, once the image size is known.
+    slam: RefCell<Option<Slam>>,
 }
 
 #[wasm_bindgen]
 impl Tracker {
-    /// WebGPU when `webgpu` is true, else WebGL2 on `canvas`.
-    pub async fn create(canvas: HtmlCanvasElement, webgpu: bool) -> Result<Tracker, JsValue> {
+    /// WebGPU when `webgpu` is true, else WebGL2 on `canvas`. `fov_deg`: field of view across the long side.
+    pub async fn create(canvas: HtmlCanvasElement, webgpu: bool, fov_deg: f32) -> Result<Tracker, JsValue> {
         let backend = if webgpu { Backend::Gpu(Wgpu::new().await?) } else { Backend::Gl(Gl::new(&canvas)?) };
-        Ok(Tracker { backend, cfg: FrontEnd::default() })
+        Ok(Tracker { backend, cfg: Cell::new(FrontEnd::default()), fov: fov_deg, slam: RefCell::new(None) })
+    }
+
+    /// Current adaptive FAST threshold.
+    pub fn threshold(&self) -> u8 {
+        self.cfg.get().fast_threshold
     }
 
     pub fn backend(&self) -> String {
@@ -147,15 +160,38 @@ impl Tracker {
         }
     }
 
-    /// Flat [x, y, level, score] per kept keypoint, level-0 pixels. Descriptors are computed
-    /// (so timing is realistic) but not returned yet.
-    pub async fn detect(&self, rgba: Vec<u8>, w: usize, h: usize) -> Result<Vec<f32>, JsValue> {
+    /// Flat [x, y, level, score] per kept keypoint, level-0 pixels. `alpha`, `beta`, `gamma`:
+    /// W3C deviceorientation degrees for this frame, or NaN when there is no sensor (no tracking then).
+    /// `vision` false: sensor rotation only, no map (to tune FOV and sensor delay).
+    pub async fn detect(&self, rgba: Vec<u8>, w: usize, h: usize, alpha: f32, beta: f32, gamma: f32, vision: bool) -> Result<Vec<f32>, JsValue> {
+        let mut cfg = self.cfg.get();
         let levels = match &self.backend {
-            Backend::Gl(g) => g.front_end(&rgba, w, h, &self.cfg, BORDER).await?,
-            Backend::Gpu(g) => g.front_end(&rgba, w, h, &self.cfg, BORDER).await?,
+            Backend::Gl(g) => g.front_end(&rgba, w, h, &cfg, BORDER).await?,
+            Backend::Gpu(g) => g.front_end(&rgba, w, h, &cfg, BORDER).await?,
         };
-        // shortcut: no IMU yet, so every descriptor uses the intensity centroid; wire gravity in phase 2.
-        let (kps, _desc) = readback::features(&levels, &self.cfg, |_| None);
+        // Phase 2 map points are all floor points, so orientation is the intensity centroid everywhere
+        // (see the open descriptor decision in the SLAM design note).
+        let (kps, desc) = readback::features(&levels, &cfg, |_| None);
+        cfg.fast_threshold = cfg.adapt(kps.len());
+        self.cfg.set(cfg);
+        if !alpha.is_nan() {
+            let mut slam = self.slam.borrow_mut(); // after the GPU await: never held across it
+            let slam = slam.get_or_insert_with(|| Slam::new(Intrinsics::from_fov(w, h, self.fov)));
+            let sensor = camera_from_orientation(alpha, beta, gamma);
+            if vision { slam.update(&kps, &desc, &sensor) } else { slam.orient(&sensor) }
+        }
         Ok(kps.iter().flat_map(|k| [k.x, k.y, k.level as f32, k.score as f32]).collect())
+    }
+
+    /// [state, inliers, map size, C(3), R camera-to-world row-major (9), f, cx, cy];
+    /// empty before the first sensor frame. State: 0 initializing, 1 normal, 2 limited, 3 lost.
+    pub fn pose(&self) -> Vec<f32> {
+        let slam = self.slam.borrow();
+        let Some(s) = slam.as_ref() else { return Vec::new() };
+        let mut out = vec![s.state as u8 as f32, s.inliers as f32, s.map_len() as f32];
+        out.extend(s.c);
+        out.extend(s.r.iter().flatten());
+        out.extend([s.k.f, s.k.cx, s.k.cy]);
+        out
     }
 }

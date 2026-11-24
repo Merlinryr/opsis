@@ -17,40 +17,77 @@
   import init, { Tracker } from "../pkg/webar.js";
   const $ = (id) => document.getElementById(id);
   const hud = $("hud"), video = $("video"), view = $("view");
+  const params = new URLSearchParams(location.search);
   const MAX_SIDE = 640; // processing size; level 0 of the pyramid
+  const FOV = Number(params.get("fov") ?? 69); // degrees across the long side; tune until the grid holds when turning
+  const DELAY = Number(params.get("delay") ?? 0); // ms the sensor leads the camera; tune until the grid holds when turning fast
+  const VISION = params.get("vision") !== "0"; // ?vision=0: sensor rotation only, to tune fov and delay over a fixed grid
   const COLORS = ["#ff3b30", "#ffcc00", "#34c759", "#0a84ff"];
+  const STATES = ["initializing: tilt down at the floor", "normal", "limited", "lost"];
 
   await init();
-  const forceGl = new URLSearchParams(location.search).get("backend") === "webgl";
-  const webgpu = !forceGl && !!navigator.gpu && !!(await navigator.gpu.requestAdapter());
-  hud.textContent = `ready (${webgpu ? "webgpu" : "webgl2"}). ?backend=webgl forces WebGL2.`;
+  const webgpu = params.get("backend") !== "webgl" && !!navigator.gpu && !!(await navigator.gpu.requestAdapter());
+  hud.textContent = `ready (${webgpu ? "webgpu" : "webgl2"}). Params: ?backend=webgl ?fov=${FOV} ?delay=${DELAY} ?vision=${+VISION}`;
   $("start").hidden = false;
 
-  // iOS needs a user gesture before the camera can play.
+  // Timestamped sensor samples; the frame picks the one nearest its capture time (no angle interpolation:
+  // Euler angles are singular in upright portrait).
+  const samples = [];
+  addEventListener("deviceorientation", (e) => {
+    if (e.alpha === null) return;
+    samples.push({ t: performance.now(), a: e.alpha, b: e.beta, g: e.gamma }); // stamped on receipt: one clock with the frames
+    if (samples.length > 60) samples.shift();
+  });
+  const sensorAt = (t) => samples.reduce((best, s) => (!best || Math.abs(s.t - t) < Math.abs(best.t - t) ? s : best), null);
+
   $("start").onclick = async () => {
+    // iOS: must be the first call in the gesture, before any await.
+    const perm = window.DeviceOrientationEvent?.requestPermission?.() ?? Promise.resolve("granted");
     $("start").hidden = true;
     try {
+      const sensorOk = (await perm) === "granted";
       video.srcObject = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false,
       });
       await video.play();
-      const tracker = await Tracker.create($("gl"), webgpu);
+      const tracker = await Tracker.create($("gl"), webgpu, FOV);
       const k = MAX_SIDE / Math.max(video.videoWidth, video.videoHeight);
       const w = Math.round(video.videoWidth * k), h = Math.round(video.videoHeight * k);
       view.width = w; view.height = h;
       const ctx = view.getContext("2d");
       ctx.lineWidth = 2;
-      // Pixels come from a hidden canvas so the visible one only ever shows a frame with its circles
-      // (the browser presents during the await, which would show the frame before they are drawn).
+      // Pixels come from a hidden canvas so the visible one only ever shows a frame with its overlay
+      // (the browser presents during the await, which would show the frame before it is drawn).
       const work = new OffscreenCanvas(w, h).getContext("2d", { willReadFrequently: true });
-      let emaMs = 0, emaFps = 0, last = performance.now();
+      let emaMs = 0, emaFps = 0, last = performance.now(), anchor = null;
 
-      const frame = async () => {
+      // Project world point X with pose array p (see Tracker.pose); null if behind the camera.
+      const project = (p, X) => {
+        const d = [X[0] - p[3], X[1] - p[4], X[2] - p[5]];
+        const c = [0, 1, 2].map((j) => p[6 + j] * d[0] + p[9 + j] * d[1] + p[12 + j] * d[2]); // R^T d
+        return c[2] > 0.05 ? [p[15] * c[0] / c[2] + p[16], p[15] * c[1] / c[2] + p[17]] : null;
+      };
+      const line = (p, A, B, n = 1) => {
+        for (let i = 0; i < n; i++) {
+          const lerp = (t) => A.map((a, j) => a + (B[j] - a) * t);
+          const u = project(p, lerp(i / n)), v = project(p, lerp((i + 1) / n));
+          if (u && v) { ctx.moveTo(...u); ctx.lineTo(...v); }
+        }
+      };
+
+      let driver = "rAF", gotVfc = false;
+      const frame = async (now, meta) => {
+        if (meta) { gotVfc = true; driver = "video frames"; }
+        try {
         work.drawImage(video, 0, 0, w, h);
         const rgba = new Uint8Array(work.getImageData(0, 0, w, h).data.buffer);
+        const want = (meta?.captureTime ?? meta?.expectedDisplayTime ?? now) - DELAY;
+        const s = sensorOk ? sensorAt(want) : null;
         const t0 = performance.now();
-        const kps = await tracker.detect(rgba, w, h);
+        const kps = await tracker.detect(rgba, w, h, s ? s.a : NaN, s ? s.b : NaN, s ? s.g : NaN, VISION);
         const ms = performance.now() - t0;
+        const p = tracker.pose();
+
         ctx.drawImage(work.canvas, 0, 0);
         for (let i = 0; i < kps.length; i += 4) {
           ctx.strokeStyle = COLORS[kps[i + 2]];
@@ -58,14 +95,46 @@
           ctx.arc(kps[i], kps[i + 1], 3 * 1.44 ** kps[i + 2], 0, 2 * Math.PI);
           ctx.stroke();
         }
-        const now = performance.now();
+        if (p.length) {
+          // Floor grid (z = 0) around the start point: checks sensor rotation, FOV and delay.
+          ctx.strokeStyle = "#fff8";
+          ctx.beginPath();
+          for (let g = -3; g <= 3; g += 0.5) { line(p, [g, -3, 0], [g, 3, 0], 24); line(p, [-3, g, 0], [3, g, 0], 24); }
+          ctx.stroke();
+          // Cube anchored where the view centre hit the floor when tracking started.
+          if (p[0] === 1 && !anchor) {
+            const R = p.slice(6, 15), dz = R[8]; // world z of the optical axis
+            if (dz < -0.2) { const t = -p[5] / dz; anchor = [p[3] + R[2] * t, p[4] + R[5] * t]; }
+          }
+          if (anchor && (p[0] === 1 || p[0] === 2)) { // hidden while lost: its pose is stale
+            const [ax, ay] = anchor, e = 0.15;
+            const v = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => [ax + (i & 1 ? e : -e), ay + (i & 2 ? e : -e), i & 4 ? 2 * e : 0]);
+            ctx.strokeStyle = p[0] === 1 ? "#0f0" : "#fa0";
+            ctx.beginPath();
+            for (const [a, b] of [[0,1],[1,3],[3,2],[2,0],[4,5],[5,7],[7,6],[6,4],[0,4],[1,5],[2,6],[3,7]]) line(p, v[a], v[b]);
+            ctx.stroke();
+          }
+        }
+        const t = performance.now();
         emaMs = emaMs ? 0.9 * emaMs + 0.1 * ms : ms;
-        emaFps = emaFps ? 0.9 * emaFps + 0.1 * (1000 / (now - last)) : 1000 / (now - last);
-        last = now;
-        hud.textContent = `${tracker.backend()} ${w}x${h}\nkeypoints ${kps.length / 4}\ndetect ${emaMs.toFixed(1)} ms\nfps ${emaFps.toFixed(1)}`;
-        requestAnimationFrame(frame);
+        emaFps = emaFps ? 0.9 * emaFps + 0.1 * (1000 / (t - last)) : 1000 / (t - last);
+        last = t;
+        hud.textContent = `${tracker.backend()} ${w}x${h} fov ${FOV} delay ${DELAY} ${VISION ? "" : "SENSOR ONLY"}\n`
+          + `driver ${driver}  sensor age ${s ? (want - s.t).toFixed(0) : "-"} ms\n`
+          + `keypoints ${kps.length / 4} (t ${tracker.threshold()})  detect ${emaMs.toFixed(1)} ms  fps ${emaFps.toFixed(1)}\n`
+          + (!sensorOk ? "no orientation sensor: tracking off"
+            : p.length ? `${STATES[p[0]]}  inliers ${p[1]}  map ${p[2]}\npos ${Array.from(p.slice(3, 6), (x) => x.toFixed(2)).join(" ")}`
+            : "waiting for sensor…");
+        } catch (e) {
+          hud.textContent = `frame error: ${e}`;
+        }
+        next();
       };
-      requestAnimationFrame(frame);
+      // One callback per new camera frame; falls back to rAF if the browser never fires it (hidden video).
+      let vfcGaveUp = false;
+      setTimeout(() => { vfcGaveUp = !gotVfc; if (vfcGaveUp) requestAnimationFrame(frame); }, 500);
+      const next = () => (video.requestVideoFrameCallback && !vfcGaveUp ? video.requestVideoFrameCallback(frame) : requestAnimationFrame(frame));
+      next();
     } catch (e) {
       hud.textContent = `error: ${e}`;
     }
