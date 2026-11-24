@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>webar parity</title>
+<canvas id="gl" width="1" height="1" hidden></canvas>
+<p><a href="camera.html">Live camera view →</a></p>
+<pre id="out">running…</pre>
+<script type="module">
+  import init, { parity_webgl, parity_webgpu } from "../pkg/webar.js";
+  const out = document.getElementById("out");
+  const run = async (name, f) => {
+    try { return await f(); } catch (e) { return `FAIL ${name}\nerror: ${e}`; }
+  };
+  await init();
+  const gl = await run("webgl2", () => parity_webgl(document.getElementById("gl")));
+  const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
+  const gpu = !navigator.gpu ? "SKIP webgpu: navigator.gpu missing (needs HTTPS or localhost)"
+    : !adapter ? "SKIP webgpu: no adapter"
+    : await run("webgpu", parity_webgpu);
+  out.textContent = `${gl}\n\n${gpu}`;
+</script>
