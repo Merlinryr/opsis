@@ -1,5 +1,8 @@
 # Phone testing: serve web/ + pkg/ locally and expose them on a temporary public HTTPS URL
 # (Cloudflare quick tunnel; HTTPS is required for WebGPU on phones). Prints a QR code. Ctrl+C stops both.
+# -Record: accept camera.html?record=1 uploads into recordings/ (for the replay test).
+param([switch]$Record)
+if ($Record) { $env:WEBAR_RECORD = "1" }
 $port = if ($env:PORT) { $env:PORT } else { 8085 }
 Set-Location (Join-Path $PSScriptRoot "..")
 

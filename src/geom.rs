@@ -60,6 +60,21 @@ pub fn camera_from_orientation(alpha: f32, beta: f32, gamma: f32) -> M3 {
     mul(&r, &[[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
 }
 
+/// Midpoint of the closest approach of rays c1 + s d1 and c2 + t d2 (unit directions), if both
+/// depths are positive and the rays nearly meet (gap under 2% of the nearer depth).
+pub fn triangulate(c1: V3, d1: V3, c2: V3, d2: V3) -> Option<V3> {
+    let w = sub(c1, c2);
+    let b = dot(d1, d2);
+    let den = 1.0 - b * b;
+    if den < 1e-6 {
+        return None; // parallel rays
+    }
+    let s = (b * dot(d2, w) - dot(d1, w)) / den;
+    let t = dot(d2, w) + s * b;
+    let (p1, p2) = (add(c1, scale(d1, s)), add(c2, scale(d2, t)));
+    (s > 0.0 && t > 0.0 && norm(sub(p1, p2)) < 0.02 * s.min(t)).then(|| scale(add(p1, p2), 0.5))
+}
+
 /// Solve the N x N system `a x = b` by Gaussian elimination with partial pivoting.
 pub fn solve<const N: usize>(mut a: [[f32; N]; N], mut b: [f32; N]) -> Option<[f32; N]> {
     for c in 0..N {
@@ -108,6 +123,15 @@ mod tests {
         // beta = 90: device upright, back camera level, gravity points down the image.
         assert!(close(gravity_in_camera(0.0, 90.0, 0.0), [0.0, 1.0, 0.0]));
         assert!(close(gravity_in_camera(123.0, 90.0, 0.0), [0.0, 1.0, 0.0]), "heading must not change gravity");
+    }
+
+    #[test]
+    fn triangulates_two_rays() {
+        let x = [0.3, 2.0, 0.4];
+        let (c1, c2) = ([0.0, 0.0, 1.0], [0.5, 0.0, 1.0]);
+        let p = triangulate(c1, normalize(sub(x, c1)), c2, normalize(sub(x, c2))).unwrap();
+        assert!(close(p, x), "{p:?}");
+        assert!(triangulate(c1, [0.0, 1.0, 0.0], c2, [0.0, -1.0, 0.0]).is_none(), "behind");
     }
 
     #[test]

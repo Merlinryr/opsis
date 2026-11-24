@@ -44,23 +44,30 @@ pub enum State {
 struct MapPoint {
     x: V3,
     desc: Descriptor,
-    /// Consecutive frames matched but rejected: off-plane objects get culled.
+    /// Consecutive well-tracked frames in view without being an inlier: stale points get culled.
     misses: u8,
+    /// Floor hypothesis not yet confirmed: seeding camera centre and world ray. Seen again with
+    /// parallax, the point is confirmed (inlier) or re-triangulated from the two rays (outlier).
+    seed: Option<(V3, V3)>,
+    /// Frame it was last an inlier (or created): the oldest go first when the map is full.
+    seen: u32,
 }
 
 // shortcut: starting values, not tuned on real sequences; revisit in M01 phase 5.
 const CAMERA_HEIGHT: f32 = 1.0;
 const MIN_BELOW_HORIZON: f32 = 0.26; // sin(15 deg): depth error explodes near the horizon
 const MAX_DEPTH: f32 = 4.0 * CAMERA_HEIGHT;
-const MIN_INIT_POINTS: usize = 40;
+const MIN_INIT_POINTS: usize = 100; // 40 started on blurry frames with a map too thin to track (phone replay)
 const MAX_MAP: usize = 1500;
 const MAX_ADD: usize = 50;
 const MATCH_DIST: u32 = 64;
 const INLIER_PX: f32 = 4.0;
 const NORMAL_INLIERS: usize = 25;
-const LIMITED_INLIERS: usize = 10;
-const REINIT_AFTER_LOST: u32 = 30; // frames (~1 s): then re-seed the map from the floor
+const LIMITED_INLIERS: usize = 15;
+const REINIT_AFTER_LOST: u32 = 90; // frames (~3 s) of failed relocalization: then re-seed from the floor
+const RATIO: f32 = 0.8; // Lowe ratio for global matching
 const MAX_MISSES: u8 = 10;
+const MIN_PARALLAX_COS: f32 = 0.99756; // cos(4 deg)
 const CELL: usize = 8; // px: one map point per cell when growing the map
 const RANSAC_ITERS: usize = 64;
 
@@ -76,6 +83,7 @@ pub struct Slam {
     pub state: State,
     pub inliers: usize,
     lost_frames: u32,
+    frame: u32,
     rng: u32,
 }
 
@@ -85,7 +93,7 @@ type Pair = (V3, V3);
 impl Slam {
     pub fn new(k: Intrinsics) -> Self {
         let r = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, lost_frames: 0, rng: 0x2545_F491 }
+        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, lost_frames: 0, frame: 0, rng: 0x2545_F491 }
     }
 
     pub fn map_len(&self) -> usize {
@@ -96,11 +104,11 @@ impl Slam {
         mul(&rot_z(yaw), sensor)
     }
 
-    /// Floor point hit by the ray through (x, y), if well below the horizon and not too far.
-    fn floor_point(&self, r: &M3, c: V3, x: f32, y: f32) -> Option<V3> {
+    /// Map point on the floor hit by the ray through (x, y), if well below the horizon and not too far.
+    fn floor_point(&self, r: &M3, c: V3, x: f32, y: f32, desc: Descriptor) -> Option<MapPoint> {
         let d = mulv(r, self.k.ray(x, y));
         let t = -c[2] / d[2];
-        (-d[2] > MIN_BELOW_HORIZON && t > 0.0 && t <= MAX_DEPTH).then(|| add(c, scale(d, t)))
+        (-d[2] > MIN_BELOW_HORIZON && t > 0.0 && t <= MAX_DEPTH).then(|| MapPoint { x: add(c, scale(d, t)), desc, misses: 0, seed: Some((c, d)), seen: self.frame })
     }
 
     /// One frame: keypoints + descriptors and the sensor camera-to-world rotation.
@@ -111,36 +119,27 @@ impl Slam {
 
     pub fn update(&mut self, kps: &[Keypoint], desc: &[Descriptor], sensor: &M3) {
         self.orient(sensor);
+        self.frame += 1;
         if self.state == State::Initializing {
             return self.initialize(kps, desc);
         }
-        let radius = if self.state == State::Normal { 40.0 } else { 80.0 };
-        let (r, c) = (self.r, self.c);
-        // Guided matching: best descriptor among keypoints near each projected map point.
-        let mut matches = Vec::new(); // (map index, keypoint index)
-        for (mi, mp) in self.map.iter().enumerate() {
-            let Some((u, v)) = self.k.project(&r, c, mp.x) else { continue };
-            let best = kps
-                .iter()
-                .enumerate()
-                .filter(|(_, k)| (k.x - u).powi(2) + (k.y - v).powi(2) <= radius * radius)
-                .map(|(ki, _)| (hamming(&mp.desc, &desc[ki]), ki))
-                .min();
-            if let Some((_, ki)) = best.filter(|b| b.0 <= MATCH_DIST) {
-                matches.push((mi, ki));
-            }
-        }
+        // Lost: relocalize by matching against the whole map (ratio test, so repeating tiles cannot
+        // snap the pose one tile over), with more RANSAC samples and steps from the last pose.
+        let lost = self.state == State::Lost;
+        let matches = if lost { self.match_global(desc) } else { self.match_guided(kps, desc) };
         let pairs: Vec<Pair> = matches.iter().map(|&(mi, ki)| (self.map[mi].x, self.k.ray(kps[ki].x, kps[ki].y))).collect();
-        let (c, yaw, inl) = self.ransac(&pairs, sensor);
+        let (c, yaw, inl) = if lost { self.ransac(&pairs, sensor, 128, 3) } else { self.ransac(&pairs, sensor, RANSAC_ITERS, 1) };
         self.inliers = inl.iter().filter(|&&b| b).count();
+        // Limited also needs a quarter of the matches to agree: a few lucky inliers among many
+        // matches is a wrong pose (seen in the first replay).
         self.state = match self.inliers {
             n if n >= NORMAL_INLIERS => State::Normal,
-            n if n >= LIMITED_INLIERS => State::Limited,
+            n if n >= LIMITED_INLIERS && n * 4 >= pairs.len() => State::Limited,
             _ => State::Lost,
         };
         if self.state == State::Lost {
-            // Keep the last pose. shortcut: re-seeding from the floor stands in for relocalization
-            // (phase 3, R4); it keeps x/y, so anchors stay roughly in place but can jump.
+            // Keep the last pose and keep relocalizing. shortcut: after REINIT_AFTER_LOST frames the map is
+            // re-seeded from the floor at the last x/y (new place); anchors can jump.
             self.lost_frames += 1;
             if self.lost_frames >= REINIT_AFTER_LOST {
                 self.state = State::Initializing;
@@ -161,16 +160,38 @@ impl Slam {
         let (gw, gh) = (((2.0 * self.k.cx) as usize) / CELL + 1, ((2.0 * self.k.cy) as usize) / CELL + 1);
         let cell = |u: f32, v: f32| (u >= 0.0 && v >= 0.0).then(|| (u as usize / CELL, v as usize / CELL)).filter(|&(x, y)| x < gw && y < gh);
         let mut is_inlier = vec![false; self.map.len()];
-        for (&(mi, _), &ok) in matches.iter().zip(&inl) {
+        for (&(mi, ki), &ok) in matches.iter().zip(&inl) {
             is_inlier[mi] = ok;
+            let mp = &mut self.map[mi];
+            let Some((c1, d1)) = mp.seed else { continue };
+            let d2 = mulv(&r, self.k.ray(kps[ki].x, kps[ki].y));
+            if dot(d1, d2) > MIN_PARALLAX_COS {
+                continue; // not enough parallax to tell floor from off-floor yet
+            }
+            mp.seed = None;
+            if !ok {
+                // Off the floor (stool, shelf): move it to where the two rays meet, on probation.
+                match geom::triangulate(c1, d1, c, d2) {
+                    Some(x) => (mp.x, mp.misses) = (x, MAX_MISSES - 3),
+                    None => mp.misses = MAX_MISSES,
+                }
+            }
         }
         let mut occupied = vec![false; gw * gh];
         for (mp, &ok) in self.map.iter_mut().zip(&is_inlier) {
             let Some((x, y)) = self.k.project(&r, c, mp.x).and_then(|(u, v)| cell(u, v)) else { continue };
             occupied[y * gw + x] = true;
             mp.misses = if ok { 0 } else { mp.misses.saturating_add(1) };
+            if ok {
+                mp.seen = self.frame;
+            }
         }
         self.map.retain(|mp| mp.misses < MAX_MISSES);
+        if self.map.len() > MAX_MAP - MAX_ADD {
+            // Full: evict the points seen longest ago so the map follows the camera (it used to freeze here).
+            self.map.sort_unstable_by(|a, b| b.seen.cmp(&a.seen));
+            self.map.truncate(MAX_MAP - MAX_ADD);
+        }
         let room = MAX_MAP.saturating_sub(self.map.len()).min(MAX_ADD);
         let mut added = 0;
         for (k, d) in kps.iter().zip(desc) {
@@ -178,9 +199,9 @@ impl Slam {
             if added == room || occupied[y * gw + x] {
                 continue;
             }
-            if let Some(p) = self.floor_point(&r, c, k.x, k.y) {
+            if let Some(mp) = self.floor_point(&r, c, k.x, k.y, *d) {
                 occupied[y * gw + x] = true;
-                self.map.push(MapPoint { x: p, desc: *d, misses: 0 });
+                self.map.push(mp);
                 added += 1;
             }
         }
@@ -191,7 +212,7 @@ impl Slam {
         let map: Vec<MapPoint> = kps
             .iter()
             .zip(desc)
-            .filter_map(|(k, d)| Some(MapPoint { x: self.floor_point(&r, c, k.x, k.y)?, desc: *d, misses: 0 }))
+            .filter_map(|(k, d)| self.floor_point(&r, c, k.x, k.y, *d))
             .collect();
         if map.len() >= MIN_INIT_POINTS {
             (self.map, self.c, self.state, self.inliers, self.lost_frames) = (map, c, State::Normal, 0, 0);
@@ -217,21 +238,67 @@ impl Slam {
     }
 
     /// 2-point RANSAC over (position, yaw), then refinement on all inliers.
-    fn ransac(&mut self, pairs: &[Pair], sensor: &M3) -> (V3, f32, Vec<bool>) {
+    /// Best descriptor among keypoints near each projected map point.
+    fn match_guided(&self, kps: &[Keypoint], desc: &[Descriptor]) -> Vec<(usize, usize)> {
+        let radius = if self.state == State::Normal { 40.0 } else { 80.0 };
+        let (r, c) = (self.r, self.c);
+        self.map
+            .iter()
+            .enumerate()
+            .filter_map(|(mi, mp)| {
+                let (u, v) = self.k.project(&r, c, mp.x)?;
+                kps.iter()
+                    .enumerate()
+                    .filter(|(_, k)| (k.x - u).powi(2) + (k.y - v).powi(2) <= radius * radius)
+                    .map(|(ki, _)| (hamming(&mp.desc, &desc[ki]), ki))
+                    .min()
+                    .filter(|b| b.0 <= MATCH_DIST)
+                    .map(|(_, ki)| (mi, ki))
+            })
+            .collect()
+    }
+
+    /// Best descriptor among all keypoints, kept only if clearly better than the runner-up.
+    fn match_global(&self, desc: &[Descriptor]) -> Vec<(usize, usize)> {
+        self.map
+            .iter()
+            .enumerate()
+            .filter_map(|(mi, mp)| {
+                let (mut best, mut second, mut bk) = (u32::MAX, u32::MAX, 0);
+                for (ki, d) in desc.iter().enumerate() {
+                    let h = hamming(&mp.desc, d);
+                    if h < best {
+                        (second, best, bk) = (best, h, ki);
+                    } else if h < second {
+                        second = h;
+                    }
+                }
+                (best <= MATCH_DIST && (best as f32) < RATIO * second as f32).then_some((mi, bk))
+            })
+            .collect()
+    }
+
+    /// RANSAC over (position, yaw) from the current pose: `iters` 2-point samples, each solved with
+    /// `steps` Gauss-Newton steps (several when the start pose is far, e.g. relocalizing).
+    fn ransac(&mut self, pairs: &[Pair], sensor: &M3, iters: usize, steps: usize) -> (V3, f32, Vec<bool>) {
         let (c0, yaw0) = (self.c, self.yaw);
         let mut best = (c0, yaw0, self.inliers(pairs, sensor, c0, yaw0));
         let count = |v: &[bool]| v.iter().filter(|&&b| b).count();
         if pairs.len() < 2 {
             return best;
         }
-        for _ in 0..RANSAC_ITERS {
+        for _ in 0..iters {
             let (i, j) = (self.next_rand(pairs.len()), self.next_rand(pairs.len()));
             let r = self.rotation(sensor, yaw0);
             let (di, dj) = (mulv(&r, pairs[i].1), mulv(&r, pairs[j].1));
             if i == j || dot(di, dj) > 0.9994 {
                 continue; // same or near-parallel rays (< 2 deg) constrain nothing
             }
-            let Some((c, yaw)) = step(&[pairs[i], pairs[j]], sensor, c0, yaw0) else { continue };
+            let mut hyp = Some((c0, yaw0));
+            for _ in 0..steps {
+                hyp = hyp.and_then(|(c, yaw)| step(&[pairs[i], pairs[j]], sensor, c, yaw));
+            }
+            let Some((c, yaw)) = hyp else { continue };
             let inl = self.inliers(pairs, sensor, c, yaw);
             if count(&inl) > count(&best.2) {
                 best = (c, yaw, inl);
@@ -414,5 +481,79 @@ mod tests {
         slam.update(&kps, &desc, &sensor);
         assert_eq!(slam.state, State::Normal);
         assert_eq!(slam.c, [0.0, 0.0, CAMERA_HEIGHT]);
+    }
+
+    /// A third of the corners sit on a 0.4-high platform (a stool top, a box). They are seeded as
+    /// floor at first; walking must move them to their true height without losing the pose.
+    #[test]
+    fn raised_points_get_their_true_height() {
+        let mut s = 5;
+        let platform = |x: f32, y: f32| (-0.6..0.6).contains(&x) && (1.0..1.8).contains(&y);
+        let w: Vec<(V3, Descriptor)> = world(&mut s)
+            .into_iter()
+            .map(|(x, d)| (if platform(x[0], x[1]) { [x[0], x[1], 0.4] } else { x }, d))
+            .collect();
+        let sensor = camera_from_orientation(0.0, 45.0, 0.0);
+        let mut slam = Slam::new(K);
+        let xs: Vec<f32> = (0..=20).chain((0..20).rev()).map(|i| i as f32 * 0.03).collect();
+        for &x in &xs {
+            let (kps, desc) = observe(&slam, &sensor, [x, 0.0, 1.0], &w);
+            slam.update(&kps, &desc, &sensor);
+            assert_ne!(slam.state, State::Lost, "x {x}");
+        }
+        assert!(norm(sub(slam.c, [0.0, 0.0, 1.0])) < 0.05, "drift {:?}", slam.c);
+        let on_platform: Vec<f32> = slam
+            .map
+            .iter()
+            .filter_map(|m| w.iter().find(|(_, d)| *d == m.desc).filter(|(x, _)| x[2] > 0.0).map(|_| m.x[2]))
+            .collect();
+        let right = on_platform.iter().filter(|z| (**z - 0.4).abs() < 0.05).count();
+        assert!(on_platform.len() >= 20 && right * 10 >= on_platform.len() * 8, "{right}/{} platform points at true height", on_platform.len());
+    }
+
+    /// Lost, then the camera reappears 0.5 away (beyond the guided-match radius): relocalizes onto
+    /// the existing map instead of re-seeding a new one.
+    #[test]
+    fn relocalizes_after_a_jump() {
+        let mut s = 21;
+        let w = world(&mut s);
+        let sensor = camera_from_orientation(0.0, 45.0, 0.0);
+        let mut slam = Slam::new(K);
+        let (kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &w);
+        slam.update(&kps, &desc, &sensor);
+        for _ in 0..3 {
+            slam.update(&[], &[], &sensor);
+        }
+        assert_eq!(slam.state, State::Lost);
+        let target = [0.5, 0.3, 1.0];
+        let (kps, desc) = observe(&slam, &sensor, target, &w);
+        slam.update(&kps, &desc, &sensor);
+        assert_eq!(slam.state, State::Normal, "inliers {}", slam.inliers);
+        assert!(norm(sub(slam.c, target)) < 0.02, "c {:?}", slam.c);
+    }
+
+    /// Tiles repeat every 0.4: a one-tile shift explains every match. Relocalization must end
+    /// Lost or at the true pose, never shifted.
+    #[test]
+    fn repeating_tiles_never_snap_one_tile_over() {
+        let mut s = 31;
+        let tiles: Vec<Descriptor> = (0..16).map(|_| rand_desc(&mut s)).collect();
+        let w: Vec<(V3, Descriptor)> = world(&mut s)
+            .into_iter()
+            .enumerate()
+            .map(|(i, (x, _))| (x, tiles[(i % 60 % 4) + 4 * (i / 60 % 4)]))
+            .collect();
+        let sensor = camera_from_orientation(0.0, 45.0, 0.0);
+        let mut slam = Slam::new(K);
+        let (kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &w);
+        slam.update(&kps, &desc, &sensor);
+        for _ in 0..3 {
+            slam.update(&[], &[], &sensor);
+        }
+        let target = [0.4, 0.0, 1.0];
+        let (kps, desc) = observe(&slam, &sensor, target, &w);
+        slam.update(&kps, &desc, &sensor);
+        let at_truth = norm(sub(slam.c, target)) < 0.05;
+        assert!(slam.state == State::Lost || at_truth, "state {:?} c {:?}", slam.state, slam.c);
     }
 }

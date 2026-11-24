@@ -32,6 +32,19 @@ impl Default for FrontEnd {
     }
 }
 
+/// CPU half of one tracked frame, shared by the browser `Tracker` and the replay test:
+/// keypoints + descriptors from the GPU (or CPU) readback, threshold adaptation, SLAM update.
+/// `slam` is None without a sensor; `vision` false applies the sensor rotation only.
+pub fn track(levels: &[readback::Level], cfg: &mut FrontEnd, slam: Option<&mut slam::Slam>, sensor: &geom::M3, vision: bool) -> Vec<fast::Keypoint> {
+    // Phase 2/3 descriptors use the intensity centroid everywhere (open decision in the SLAM design note).
+    let (kps, desc) = readback::features(levels, cfg, |_| None);
+    cfg.fast_threshold = cfg.adapt(kps.len());
+    if let Some(slam) = slam {
+        if vision { slam.update(&kps, &desc, sensor) } else { slam.orient(sensor) }
+    }
+    kps
+}
+
 impl FrontEnd {
     const MIN_THRESHOLD: u8 = 7;
     const DEFAULT_THRESHOLD: u8 = 20;

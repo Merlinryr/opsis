@@ -169,17 +169,13 @@ impl Tracker {
             Backend::Gl(g) => g.front_end(&rgba, w, h, &cfg, BORDER).await?,
             Backend::Gpu(g) => g.front_end(&rgba, w, h, &cfg, BORDER).await?,
         };
-        // Phase 2 map points are all floor points, so orientation is the intensity centroid everywhere
-        // (see the open descriptor decision in the SLAM design note).
-        let (kps, desc) = readback::features(&levels, &cfg, |_| None);
-        cfg.fast_threshold = cfg.adapt(kps.len());
-        self.cfg.set(cfg);
-        if !alpha.is_nan() {
+        let kps = {
             let mut slam = self.slam.borrow_mut(); // after the GPU await: never held across it
-            let slam = slam.get_or_insert_with(|| Slam::new(Intrinsics::from_fov(w, h, self.fov)));
             let sensor = camera_from_orientation(alpha, beta, gamma);
-            if vision { slam.update(&kps, &desc, &sensor) } else { slam.orient(&sensor) }
-        }
+            let slam = (!alpha.is_nan()).then(|| slam.get_or_insert_with(|| Slam::new(Intrinsics::from_fov(w, h, self.fov))));
+            crate::track(&levels, &mut cfg, slam, &sensor, vision)
+        };
+        self.cfg.set(cfg);
         Ok(kps.iter().flat_map(|k| [k.x, k.y, k.level as f32, k.score as f32]).collect())
     }
 

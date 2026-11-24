@@ -21,6 +21,7 @@
   const MAX_SIDE = 640; // processing size; level 0 of the pyramid
   const FOV = Number(params.get("fov") ?? 69); // degrees across the long side; tune until the grid holds when turning
   const DELAY = Number(params.get("delay") ?? 0); // ms the sensor leads the camera; tune until the grid holds when turning fast
+  const RECORD = params.get("record") === "1"; // ?record=1: upload luma + sensor angles (server needs WEBAR_RECORD=1)
   const VISION = params.get("vision") !== "0"; // ?vision=0: sensor rotation only, to tune fov and delay over a fixed grid
   const COLORS = ["#ff3b30", "#ffcc00", "#34c759", "#0a84ff"];
   const STATES = ["initializing: tilt down at the floor", "normal", "limited", "lost"];
@@ -75,7 +76,7 @@
         }
       };
 
-      let driver = "rAF", gotVfc = false;
+      let driver = "rAF", gotVfc = false, recorded = 0;
       const frame = async (now, meta) => {
         if (meta) { gotVfc = true; driver = "video frames"; }
         try {
@@ -84,6 +85,13 @@
         const want = (meta?.captureTime ?? meta?.expectedDisplayTime ?? now) - DELAY;
         const s = sensorOk ? sensorAt(want) : null;
         const t0 = performance.now();
+        if (RECORD && s && recorded < 300) {
+          // Same integer luma as the GPU pass, so the replay sees exactly what the tracker saw.
+          const luma = new Uint8Array(w * h);
+          for (let i = 0; i < luma.length; i++) luma[i] = (77 * rgba[4 * i] + 150 * rgba[4 * i + 1] + 29 * rgba[4 * i + 2]) >> 8;
+          recorded++;
+          fetch(`/rec?w=${w}&h=${h}&a=${s.a}&b=${s.b}&g=${s.g}&fov=${FOV}`, { method: "POST", body: luma }).catch(() => {});
+        }
         const kps = await tracker.detect(rgba, w, h, s ? s.a : NaN, s ? s.b : NaN, s ? s.g : NaN, VISION);
         const ms = performance.now() - t0;
         const p = tracker.pose();
@@ -119,7 +127,7 @@
         emaMs = emaMs ? 0.9 * emaMs + 0.1 * ms : ms;
         emaFps = emaFps ? 0.9 * emaFps + 0.1 * (1000 / (t - last)) : 1000 / (t - last);
         last = t;
-        hud.textContent = `${tracker.backend()} ${w}x${h} fov ${FOV} delay ${DELAY} ${VISION ? "" : "SENSOR ONLY"}\n`
+        hud.textContent = `${tracker.backend()} ${w}x${h} fov ${FOV} delay ${DELAY} ${VISION ? "" : "SENSOR ONLY"}${RECORD ? ` REC ${recorded}/300` : ""}\n`
           + `driver ${driver}  sensor age ${s ? (want - s.t).toFixed(0) : "-"} ms\n`
           + `keypoints ${kps.length / 4} (t ${tracker.threshold()})  detect ${emaMs.toFixed(1)} ms  fps ${emaFps.toFixed(1)}\n`
           + (!sensorOk ? "no orientation sensor: tracking off"
