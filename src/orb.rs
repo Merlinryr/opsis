@@ -48,15 +48,24 @@ pub fn gravity_angle(x: f32, y: f32, g: [f32; 3], fx: f32, fy: f32, cx: f32, cy:
 pub fn centroid_angle(level: &Gray, x: f32, y: f32) -> f32 {
     let r = PATCH_RADIUS as isize;
     let (cx, cy) = (x.round() as isize, y.round() as isize);
+    let inside = cx >= r && cy >= r && cx + r < level.w as isize && cy + r < level.h as isize;
     let (mut m10, mut m01) = (0i64, 0i64);
+    // Row by row over the disc: slices when inside (hot path, ~4x faster), clamped reads at borders.
     for v in -r..=r {
-        for u in -r..=r {
-            if u * u + v * v <= r * r {
+        let du = ((r * r - v * v) as f32).sqrt() as isize; // widest |u| with u² + v² <= r²
+        let (mut sum, mut usum) = (0i64, 0i64);
+        if inside {
+            let start = ((cy + v) as usize) * level.w + (cx - du) as usize;
+            for (u, &i) in (-du..=du).zip(&level.data[start..=start + 2 * du as usize]) {
+                (sum, usum) = (sum + i as i64, usum + u as i64 * i as i64);
+            }
+        } else {
+            for u in -du..=du {
                 let i = level.at(cx + u, cy + v) as i64;
-                m10 += u as i64 * i;
-                m01 += v as i64 * i;
+                (sum, usum) = (sum + i, usum + u as i64 * i);
             }
         }
+        (m10, m01) = (m10 + usum, m01 + v as i64 * sum);
     }
     (m01 as f32).atan2(m10 as f32)
 }
@@ -67,7 +76,8 @@ pub fn describe(level: &Gray, pat: &[[i8; 4]; 256], x: f32, y: f32, angle: f32) 
     let (s, c) = rot.sin_cos();
     let px = |u: i8, v: i8| {
         let (u, v) = (u as f32, v as f32);
-        level.at((x + c * u - s * v).round() as isize, (y + s * u + c * v).round() as isize)
+        // Truncating v + 0.5 = round() here (negatives clamp to 0 either way); round() is a libm call on wasm.
+        level.at((x + c * u - s * v + 0.5) as isize, (y + s * u + c * v + 0.5) as isize)
     };
     let mut d = [0u64; 4];
     for (i, p) in pat.iter().enumerate() {
@@ -191,6 +201,25 @@ mod tests {
         let a = describe(&img, &pat, x, y, centroid_angle(&img, x, y));
         let b = describe(&rimg, &pat, rx, ry, centroid_angle(&rimg, rx, ry));
         assert!(hamming(&a, &b) <= 16, "centroid distance {}", hamming(&a, &b));
+    }
+
+    #[test]
+    fn centroid_rows_match_per_pixel_disc() {
+        let img = texture(96);
+        let naive = |x: f32, y: f32| {
+            let (cx, cy, r) = (x.round() as isize, y.round() as isize, PATCH_RADIUS as isize);
+            let (mut m10, mut m01) = (0i64, 0i64);
+            for v in -r..=r {
+                for u in (-r..=r).filter(|u| u * u + v * v <= r * r) {
+                    let i = img.at(cx + u, cy + v) as i64;
+                    (m10, m01) = (m10 + u as i64 * i, m01 + v as i64 * i);
+                }
+            }
+            (m01 as f32).atan2(m10 as f32)
+        };
+        for (x, y) in [(40.0, 50.0), (15.0, 15.0), (80.4, 80.6), (3.0, 90.0), (95.0, 0.0)] {
+            assert_eq!(centroid_angle(&img, x, y), naive(x, y), "at {x},{y}");
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@
 
 use crate::fast::Keypoint;
 use crate::geom::{self, M3, V3, add, cross, dot, mul, mulv, norm, normalize, rot_z, scale, sub, transpose};
-use crate::orb::{Descriptor, hamming};
+use crate::orb::{BORDER, Descriptor, hamming};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Intrinsics {
@@ -51,6 +51,16 @@ struct MapPoint {
     seed: Option<(V3, V3)>,
     /// Frame it was last an inlier (or created): the oldest go first when the map is full.
     seen: u32,
+    born: u32,
+}
+
+/// Guided matching outcome for one projected map point.
+#[derive(Clone, Copy, PartialEq)]
+enum Guided {
+    NoKeypoint,
+    TooFar,
+    Ambiguous,
+    Match(usize),
 }
 
 // shortcut: starting values, not tuned on real sequences; revisit in M01 phase 5.
@@ -65,11 +75,13 @@ const INLIER_PX: f32 = 4.0;
 const NORMAL_INLIERS: usize = 25;
 const LIMITED_INLIERS: usize = 15;
 const REINIT_AFTER_LOST: u32 = 90; // frames (~3 s) of failed relocalization: then re-seed from the floor
-const RATIO: f32 = 0.8; // Lowe ratio for global matching
+const RATIO: f32 = 0.8; // Lowe ratio, guided and global matching
 const MAX_MISSES: u8 = 10;
 const MIN_PARALLAX_COS: f32 = 0.99756; // cos(4 deg)
 const CELL: usize = 8; // px: one map point per cell when growing the map
 const RANSAC_ITERS: usize = 64;
+const MAX_RELOC_DZ: f32 = 0.5 * CAMERA_HEIGHT;
+const OLD: u32 = 50; // frames: a point this old counts in `Slam::old`
 
 pub struct Slam {
     pub k: Intrinsics,
@@ -82,6 +94,11 @@ pub struct Slam {
     pub r: M3,
     pub state: State,
     pub inliers: usize,
+    /// Matches fed to RANSAC this frame (inliers / matches = agreement).
+    pub matches: usize,
+    /// Replay metric, cumulative: guided outcomes of in-view points older than `OLD` frames
+    /// (no keypoint near, best over `MATCH_DIST`, ratio-rejected, RANSAC outlier, inlier).
+    pub old: [u32; 5],
     lost_frames: u32,
     frame: u32,
     rng: u32,
@@ -93,7 +110,7 @@ type Pair = (V3, V3);
 impl Slam {
     pub fn new(k: Intrinsics) -> Self {
         let r = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, lost_frames: 0, frame: 0, rng: 0x2545_F491 }
+        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, matches: 0, old: [0; 5], lost_frames: 0, frame: 0, rng: 0x1234_5678 }
     }
 
     pub fn map_len(&self) -> usize {
@@ -108,7 +125,7 @@ impl Slam {
     fn floor_point(&self, r: &M3, c: V3, x: f32, y: f32, desc: Descriptor) -> Option<MapPoint> {
         let d = mulv(r, self.k.ray(x, y));
         let t = -c[2] / d[2];
-        (-d[2] > MIN_BELOW_HORIZON && t > 0.0 && t <= MAX_DEPTH).then(|| MapPoint { x: add(c, scale(d, t)), desc, misses: 0, seed: Some((c, d)), seen: self.frame })
+        (-d[2] > MIN_BELOW_HORIZON && t > 0.0 && t <= MAX_DEPTH).then(|| MapPoint { x: add(c, scale(d, t)), desc, misses: 0, seed: Some((c, d)), seen: self.frame, born: self.frame })
     }
 
     /// One frame: keypoints + descriptors and the sensor camera-to-world rotation.
@@ -124,17 +141,44 @@ impl Slam {
             return self.initialize(kps, desc);
         }
         // Lost: relocalize by matching against the whole map (ratio test, so repeating tiles cannot
-        // snap the pose one tile over), with more RANSAC samples and steps from the last pose.
+        // snap the pose one tile over), then confirm with guided matching from the candidate pose, which
+        // alone decides the state. Global matches agree only 13-21% even when right, and the room replay
+        // relocalized 30 units away, below the floor, as Normal with 26/185 inliers (map culled with it).
         let lost = self.state == State::Lost;
-        let matches = if lost { self.match_global(desc) } else { self.match_guided(kps, desc) };
-        let pairs: Vec<Pair> = matches.iter().map(|&(mi, ki)| (self.map[mi].x, self.k.ray(kps[ki].x, kps[ki].y))).collect();
-        let (c, yaw, inl) = if lost { self.ransac(&pairs, sensor, 128, 3) } else { self.ransac(&pairs, sensor, RANSAC_ITERS, 1) };
+        let (mut guided, mut matches, mut c, mut yaw, mut inl) = self.solve(kps, desc, sensor, lost);
+        // Confirmation is the gate, so a weak global result is enough to try it: after a blackout on tiles,
+        // global matches gave 6-15 inliers of ~200, some near the true pose (corridor replay).
+        if lost && inl.iter().filter(|&&b| b).count() >= LIMITED_INLIERS / 2 {
+            let last = (self.c, self.yaw, self.r, self.state);
+            (self.c, self.yaw, self.r, self.state) = (c, yaw, self.rotation(sensor, yaw), State::Limited);
+            (guided, matches, c, yaw, inl) = self.solve(kps, desc, sensor, false);
+            (self.c, self.yaw, self.r, self.state) = last;
+        }
         self.inliers = inl.iter().filter(|&&b| b).count();
+        self.matches = matches.len();
+        let mut is_inlier = vec![false; self.map.len()];
+        for (&(mi, _), &ok) in matches.iter().zip(&inl) {
+            is_inlier[mi] = ok;
+        }
+        for &(mi, g) in guided.iter().filter(|&&(mi, _)| self.frame - self.map[mi].born >= OLD) {
+            let b = match g {
+                Guided::NoKeypoint => 0,
+                Guided::TooFar => 1,
+                Guided::Ambiguous => 2,
+                Guided::Match(_) => 3 + is_inlier[mi] as usize,
+            };
+            self.old[b] += 1;
+        }
         // Limited also needs a quarter of the matches to agree: a few lucky inliers among many
-        // matches is a wrong pose (seen in the first replay).
+        // matches is a wrong pose (seen in the first replay). Normal needs an eighth: good Normal frames
+        // agree >= 16% on all replays, seeds and shifts; a relocalization 14 units off confirmed with 27/503.
+        // The map is seeded on the floor (z = 0): a camera under it is a wrong pose, however many inliers
+        // (room replay: relocalized 26 units away at z -2.56 with 43 guided inliers). Nor does the height
+        // jump while lost (room replay, frame 191: relocalized 20 units away at z 4-7, confirmed 13%).
         self.state = match self.inliers {
-            n if n >= NORMAL_INLIERS => State::Normal,
-            n if n >= LIMITED_INLIERS && n * 4 >= pairs.len() => State::Limited,
+            _ if c[2] <= 0.0 || (lost && (c[2] - self.c[2]).abs() > MAX_RELOC_DZ) => State::Lost,
+            n if n >= NORMAL_INLIERS && n * 8 >= matches.len() => State::Normal,
+            n if n >= LIMITED_INLIERS && n * 4 >= matches.len() => State::Limited,
             _ => State::Lost,
         };
         if self.state == State::Lost {
@@ -159,10 +203,13 @@ impl Slam {
         let (r, c) = (self.r, self.c);
         let (gw, gh) = (((2.0 * self.k.cx) as usize) / CELL + 1, ((2.0 * self.k.cy) as usize) / CELL + 1);
         let cell = |u: f32, v: f32| (u >= 0.0 && v >= 0.0).then(|| (u as usize / CELL, v as usize / CELL)).filter(|&(x, y)| x < gw && y < gh);
-        let mut is_inlier = vec![false; self.map.len()];
         for (&(mi, ki), &ok) in matches.iter().zip(&inl) {
-            is_inlier[mi] = ok;
             let mp = &mut self.map[mi];
+            if ok {
+                // Latest view: descriptors drift with viewpoint; doubled re-matched old points on the replays
+                // (keeping up to 4 views gained little more and let a wrong relocalization through).
+                mp.desc = desc[ki];
+            }
             let Some((c1, d1)) = mp.seed else { continue };
             let d2 = mulv(&r, self.k.ray(kps[ki].x, kps[ki].y));
             if dot(d1, d2) > MIN_PARALLAX_COS {
@@ -177,10 +224,20 @@ impl Slam {
                 }
             }
         }
+        // A miss counts only where a corner was detected nearby: blurred frames detect few corners and
+        // used to cull most of the map while still Normal (grey-floor replay: 1500 -> 806 points in 16 frames).
+        let mut detected = vec![false; gw * gh];
+        for (x, y) in kps.iter().filter_map(|k| cell(k.x, k.y)) {
+            detected[y * gw + x] = true;
+        }
+        let near_corner = |x: usize, y: usize| (y.saturating_sub(1)..(y + 2).min(gh)).any(|j| (x.saturating_sub(1)..(x + 2).min(gw)).any(|i| detected[j * gw + i]));
         let mut occupied = vec![false; gw * gh];
         for (mp, &ok) in self.map.iter_mut().zip(&is_inlier) {
             let Some((x, y)) = self.k.project(&r, c, mp.x).and_then(|(u, v)| cell(u, v)) else { continue };
             occupied[y * gw + x] = true;
+            if !ok && !near_corner(x, y) {
+                continue;
+            }
             mp.misses = if ok { 0 } else { mp.misses.saturating_add(1) };
             if ok {
                 mp.seen = self.frame;
@@ -189,7 +246,7 @@ impl Slam {
         self.map.retain(|mp| mp.misses < MAX_MISSES);
         if self.map.len() > MAX_MAP - MAX_ADD {
             // Full: evict the points seen longest ago so the map follows the camera (it used to freeze here).
-            self.map.sort_unstable_by(|a, b| b.seen.cmp(&a.seen));
+            self.map.sort_by(|a, b| b.seen.cmp(&a.seen)); // stable: unstable order shifted with struct size
             self.map.truncate(MAX_MAP - MAX_ADD);
         }
         let room = MAX_MAP.saturating_sub(self.map.len()).min(MAX_ADD);
@@ -219,6 +276,19 @@ impl Slam {
         }
     }
 
+    /// Matches (guided from the current pose, or global) and the RANSAC pose from them.
+    fn solve(&mut self, kps: &[Keypoint], desc: &[Descriptor], sensor: &M3, global: bool) -> (Vec<(usize, Guided)>, Vec<(usize, usize)>, V3, f32, Vec<bool>) {
+        let guided = if global { Vec::new() } else { self.match_guided(kps, desc) };
+        let matches: Vec<(usize, usize)> = if global {
+            self.match_global(desc)
+        } else {
+            guided.iter().filter_map(|&(mi, g)| if let Guided::Match(ki) = g { Some((mi, ki)) } else { None }).collect()
+        };
+        let pairs: Vec<Pair> = matches.iter().map(|&(mi, ki)| (self.map[mi].x, self.k.ray(kps[ki].x, kps[ki].y))).collect();
+        let (c, yaw, inl) = if global { self.ransac(&pairs, sensor, 128, 3) } else { self.ransac(&pairs, sensor, RANSAC_ITERS, 1) };
+        (guided, matches, c, yaw, inl)
+    }
+
     fn next_rand(&mut self, n: usize) -> usize {
         self.rng ^= self.rng << 13;
         self.rng ^= self.rng >> 17;
@@ -238,22 +308,43 @@ impl Slam {
     }
 
     /// 2-point RANSAC over (position, yaw), then refinement on all inliers.
-    /// Best descriptor among keypoints near each projected map point.
-    fn match_guided(&self, kps: &[Keypoint], desc: &[Descriptor]) -> Vec<(usize, usize)> {
-        let radius = if self.state == State::Normal { 40.0 } else { 80.0 };
+    /// Best descriptor among keypoints near each projected map point, if clearly better than the runner-up:
+    /// on tile grids the nearest wrong corner is often a close second (replays: wrong Normal poses).
+    fn match_guided(&self, kps: &[Keypoint], desc: &[Descriptor]) -> Vec<(usize, Guided)> {
+        let radius: f32 = if self.state == State::Normal { 40.0 } else { 80.0 };
         let (r, c) = (self.r, self.c);
+        // Keypoints bucketed in radius-sized cells: each map point scans 3x3 cells, not every keypoint.
+        let (gw, gh) = ((2.0 * self.k.cx / radius) as usize + 1, (2.0 * self.k.cy / radius) as usize + 1);
+        let bucket = |p: f32, n: usize| ((p / radius).max(0.0) as usize).min(n - 1);
+        let mut grid = vec![Vec::new(); gw * gh];
+        for (ki, k) in kps.iter().enumerate() {
+            grid[bucket(k.y, gh) * gw + bucket(k.x, gw)].push(ki);
+        }
+        let grid = &grid;
         self.map
             .iter()
             .enumerate()
             .filter_map(|(mi, mp)| {
                 let (u, v) = self.k.project(&r, c, mp.x)?;
-                kps.iter()
-                    .enumerate()
-                    .filter(|(_, k)| (k.x - u).powi(2) + (k.y - v).powi(2) <= radius * radius)
-                    .map(|(ki, _)| (hamming(&mp.desc, &desc[ki]), ki))
-                    .min()
-                    .filter(|b| b.0 <= MATCH_DIST)
-                    .map(|(_, ki)| (mi, ki))
+                let (xs, ys) = (bucket(u - radius, gw)..=bucket(u + radius, gw), bucket(v - radius, gh)..=bucket(v + radius, gh));
+                let near = |x: f32, y: f32, d: f32| move |&ki: &usize| (kps[ki].x - x).powi(2) + (kps[ki].y - y).powi(2) <= d * d;
+                let candidates = || {
+                    ys.clone()
+                        .flat_map(|y| xs.clone().flat_map(move |x| grid[y * gw + x].iter().copied()))
+                        .filter(near(u, v, radius))
+                        .map(|ki| (hamming(&mp.desc, &desc[ki]), ki))
+                };
+                // No keypoint counts only where one could be detected: inside the image, off the border.
+                let b = BORDER as f32;
+                let detectable = (b..2.0 * self.k.cx - b).contains(&u) && (b..2.0 * self.k.cy - b).contains(&v);
+                let Some((h, ki)) = candidates().min() else { return detectable.then_some((mi, Guided::NoKeypoint)) };
+                if h > MATCH_DIST {
+                    return Some((mi, Guided::TooFar));
+                }
+                // The runner-up skips the same corner found again (another pyramid level, a pixel or two away).
+                let twin = near(kps[ki].x, kps[ki].y, 3.0);
+                let second = candidates().filter(|c| !twin(&c.1)).map(|c| c.0).min().unwrap_or(u32::MAX);
+                Some((mi, if (h as f32) < RATIO * second as f32 { Guided::Match(ki) } else { Guided::Ambiguous }))
             })
             .collect()
     }
@@ -502,9 +593,11 @@ mod tests {
             assert_ne!(slam.state, State::Lost, "x {x}");
         }
         assert!(norm(sub(slam.c, [0.0, 0.0, 1.0])) < 0.05, "drift {:?}", slam.c);
+        // Confirmed points only: a floor hypothesis waits for 4 deg of parallax (late ones never get it here).
         let on_platform: Vec<f32> = slam
             .map
             .iter()
+            .filter(|m| m.seed.is_none())
             .filter_map(|m| w.iter().find(|(_, d)| *d == m.desc).filter(|(x, _)| x[2] > 0.0).map(|_| m.x[2]))
             .collect();
         let right = on_platform.iter().filter(|z| (**z - 0.4).abs() < 0.05).count();
@@ -532,6 +625,80 @@ mod tests {
         assert!(norm(sub(slam.c, target)) < 0.02, "c {:?}", slam.c);
     }
 
+    /// Most keypoints have a twin far away (repeating texture): globally ambiguous, so only a few
+    /// match globally, but guided matching from that weak pose confirms it.
+    #[test]
+    fn relocalizes_from_a_weak_global_match() {
+        let mut s = 21;
+        let w = world(&mut s);
+        let sensor = camera_from_orientation(0.0, 45.0, 0.0);
+        let mut slam = Slam::new(K);
+        let (kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &w);
+        slam.update(&kps, &desc, &sensor);
+        slam.update(&[], &[], &sensor);
+        let target = [0.5, 0.3, 1.0];
+        let (mut kps, mut desc) = observe(&slam, &sensor, target, &w);
+        for i in 24..kps.len() {
+            kps.push(Keypoint { y: (kps[i].y + 320.0) % 640.0, ..kps[i] });
+            desc.push(desc[i]);
+        }
+        slam.update(&kps, &desc, &sensor);
+        assert_eq!(slam.state, State::Normal, "inliers {}/{}", slam.inliers, slam.matches);
+        assert!(norm(sub(slam.c, target)) < 0.02, "c {:?}", slam.c);
+    }
+
+    /// Nobody changes height by half while lost: such a relocalization is a wrong pose.
+    #[test]
+    fn never_relocalizes_to_another_height() {
+        let mut s = 21;
+        let w = world(&mut s);
+        let sensor = camera_from_orientation(0.0, 45.0, 0.0);
+        let mut slam = Slam::new(K);
+        let (kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &w);
+        slam.update(&kps, &desc, &sensor);
+        slam.update(&[], &[], &sensor);
+        let (kps, desc) = observe(&slam, &sensor, [0.0, 0.3, 1.7], &w);
+        slam.update(&kps, &desc, &sensor);
+        assert_eq!(slam.state, State::Lost, "c {:?} inliers {}", slam.c, slam.inliers);
+    }
+
+    /// Enough inliers but few of many matches agreeing is a wrong pose, never Normal.
+    #[test]
+    fn few_agreeing_matches_are_not_normal() {
+        let mut s = 21;
+        let w = world(&mut s);
+        let sensor = camera_from_orientation(0.0, 45.0, 0.0);
+        let mut slam = Slam::new(K);
+        let (mut kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &w);
+        slam.update(&kps, &desc, &sensor);
+        // All but 30 keypoints moved 20 px in scattered directions: they still match, but agree on no pose.
+        for (i, k) in kps.iter_mut().enumerate().skip(30) {
+            let a = i as f32 * 2.4;
+            (k.x, k.y) = (k.x + 20.0 * a.cos(), k.y + 20.0 * a.sin());
+        }
+        slam.update(&kps, &desc, &sensor);
+        assert!(slam.inliers >= NORMAL_INLIERS && slam.inliers * 8 < slam.matches, "{}/{}", slam.inliers, slam.matches);
+        assert_ne!(slam.state, State::Normal);
+    }
+
+    /// The floor seen from below (looking up) matches like a ceiling; a pose under the floor is impossible.
+    #[test]
+    fn never_relocalizes_below_the_floor() {
+        let mut s = 21;
+        let w = world(&mut s);
+        let down = camera_from_orientation(0.0, 45.0, 0.0);
+        let mut slam = Slam::new(K);
+        let (kps, desc) = observe(&slam, &down, [0.0, 0.0, 1.0], &w);
+        slam.update(&kps, &desc, &down);
+        slam.update(&[], &[], &down);
+        let up = camera_from_orientation(0.0, 135.0, 0.0);
+        let (kps, desc) = observe(&slam, &up, [0.0, 0.0, -1.0], &w);
+        assert!(kps.len() > 100, "{}", kps.len());
+        slam.update(&kps, &desc, &up);
+        assert_eq!(slam.state, State::Lost, "c {:?} inl {} m {}", slam.c, slam.inliers, slam.matches);
+        assert!(slam.c[2] > 0.0);
+    }
+
     /// Tiles repeat every 0.4: a one-tile shift explains every match. Relocalization must end
     /// Lost or at the true pose, never shifted.
     #[test]
@@ -555,5 +722,49 @@ mod tests {
         slam.update(&kps, &desc, &sensor);
         let at_truth = norm(sub(slam.c, target)) < 0.05;
         assert!(slam.state == State::Lost || at_truth, "state {:?} c {:?}", slam.state, slam.c);
+    }
+
+    #[test]
+    fn blurred_frames_keep_the_map() {
+        let mut s = 13;
+        let w = world(&mut s);
+        let sensor = camera_from_orientation(0.0, 45.0, 0.0);
+        let mut slam = Slam::new(K);
+        let (kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &w);
+        slam.update(&kps, &desc, &sensor);
+        slam.update(&kps, &desc, &sensor);
+        let before = slam.map_len();
+        // Blur: only the corners in a band of the image survive, enough to stay Normal for longer than MAX_MISSES.
+        let (few, fd): (Vec<_>, Vec<_>) = kps.iter().zip(&desc).filter(|(k, _)| k.y > 420.0).map(|(k, d)| (*k, *d)).unzip();
+        for _ in 0..2 * MAX_MISSES {
+            slam.update(&few, &fd, &sensor);
+            assert_eq!(slam.state, State::Normal, "{} inliers", slam.inliers);
+        }
+        assert!(slam.map_len() >= before, "map {before} -> {}", slam.map_len());
+    }
+
+    #[test]
+    fn guided_matching_skips_ambiguous_neighbours() {
+        let mut s = 11;
+        let w = world(&mut s);
+        let sensor = camera_from_orientation(0.0, 45.0, 0.0);
+        let mut slam = Slam::new(K);
+        let (mut kps, mut desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &w);
+        slam.update(&kps, &desc, &sensor);
+        let matched = |slam: &Slam, kps: &[Keypoint], desc: &[Descriptor]| -> Vec<usize> {
+            slam.match_guided(kps, desc).into_iter().filter_map(|(_, g)| if let Guided::Match(ki) = g { Some(ki) } else { None }).collect()
+        };
+        let unique = matched(&slam, &kps, &desc).len();
+        assert!(unique > 100, "{unique}");
+        // A twin of keypoint 0 a few pixels away (a repeating tile corner): that map point must not match.
+        kps.push(Keypoint { x: kps[0].x + 6.0, ..kps[0] });
+        desc.push(desc[0]);
+        let m = matched(&slam, &kps, &desc);
+        assert_eq!(m.len(), unique - 1);
+        assert!(m.iter().all(|&ki| ki != 0 && ki != kps.len() - 1));
+        // The same corner 1 px away (another pyramid level) is not a rival: keypoint 1 still matches.
+        kps.push(Keypoint { x: kps[1].x + 1.0, ..kps[1] });
+        desc.push(desc[1]);
+        assert_eq!(matched(&slam, &kps, &desc).len(), unique - 1);
     }
 }

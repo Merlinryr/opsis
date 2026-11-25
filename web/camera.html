@@ -76,21 +76,24 @@
         }
       };
 
-      let driver = "rAF", gotVfc = false, recorded = 0;
+      let driver = "rAF", gotVfc = false, sent = 0, acked = 0, failed = 0;
+      const recSession = Date.now(); // one recordings/ dir per page load
       const frame = async (now, meta) => {
         if (meta) { gotVfc = true; driver = "video frames"; }
         try {
         work.drawImage(video, 0, 0, w, h);
         const rgba = new Uint8Array(work.getImageData(0, 0, w, h).data.buffer);
-        const want = (meta?.captureTime ?? meta?.expectedDisplayTime ?? now) - DELAY;
+        const tFrame = meta?.captureTime ?? meta?.expectedDisplayTime ?? now;
+        const want = tFrame - DELAY;
         const s = sensorOk ? sensorAt(want) : null;
         const t0 = performance.now();
-        if (RECORD && s && recorded < 300) {
+        if (RECORD && s && sent < 300) {
           // Same integer luma as the GPU pass, so the replay sees exactly what the tracker saw.
           const luma = new Uint8Array(w * h);
           for (let i = 0; i < luma.length; i++) luma[i] = (77 * rgba[4 * i] + 150 * rgba[4 * i + 1] + 29 * rgba[4 * i + 2]) >> 8;
-          recorded++;
-          fetch(`/rec?w=${w}&h=${h}&a=${s.a}&b=${s.b}&g=${s.g}&fov=${FOV}`, { method: "POST", body: luma }).catch(() => {});
+          // Capture index + time travel with the frame: uploads can land out of order. Count acks, not sends.
+          fetch(`/rec?s=${recSession}&i=${sent++}&t=${tFrame}&w=${w}&h=${h}&a=${s.a}&b=${s.b}&g=${s.g}&fov=${FOV}`, { method: "POST", body: luma })
+            .then((r) => (r.ok ? acked++ : failed++), () => failed++);
         }
         const kps = await tracker.detect(rgba, w, h, s ? s.a : NaN, s ? s.b : NaN, s ? s.g : NaN, VISION);
         const ms = performance.now() - t0;
@@ -127,7 +130,7 @@
         emaMs = emaMs ? 0.9 * emaMs + 0.1 * ms : ms;
         emaFps = emaFps ? 0.9 * emaFps + 0.1 * (1000 / (t - last)) : 1000 / (t - last);
         last = t;
-        hud.textContent = `${tracker.backend()} ${w}x${h} fov ${FOV} delay ${DELAY} ${VISION ? "" : "SENSOR ONLY"}${RECORD ? ` REC ${recorded}/300` : ""}\n`
+        hud.textContent = `${tracker.backend()} ${w}x${h} fov ${FOV} delay ${DELAY} ${VISION ? "" : "SENSOR ONLY"}${RECORD ? ` REC ${acked}/300${failed ? ` FAILED ${failed}` : ""}` : ""}\n`
           + `driver ${driver}  sensor age ${s ? (want - s.t).toFixed(0) : "-"} ms\n`
           + `keypoints ${kps.length / 4} (t ${tracker.threshold()})  detect ${emaMs.toFixed(1)} ms  fps ${emaFps.toFixed(1)}\n`
           + (!sensorOk ? "no orientation sensor: tracking off"

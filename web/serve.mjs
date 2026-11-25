@@ -10,18 +10,19 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/ja
 const port = Number(process.env.PORT ?? 8081);
 
 const RECORD = process.env.WEBAR_RECORD === "1";
-const MAX_FRAMES = 300; // per server run: ~10 s at 30 fps
+const MAX_FRAMES = 300; // per recording: ~10 s at 30 fps
+const MAX_TOTAL = 3 * MAX_FRAMES; // per server run (public tunnel: bounds disk use)
 const MAX_PIXELS = 1280 * 1280;
-const session = join(root, "recordings", new Date().toISOString().replace(/[:.]/g, "-"));
 let frames = 0;
 
 // Untrusted input (public tunnel): numbers only, server-chosen file names, size-capped body.
 async function record(req, res) {
   const q = new URL(req.url, "http://x").searchParams;
-  const [w, h] = ["w", "h"].map((k) => Number.parseInt(q.get(k), 10));
-  const angles = ["a", "b", "g", "fov"].map((k) => Number(q.get(k)));
-  if (!(w > 0 && h > 0 && w * h <= MAX_PIXELS) || angles.some((v) => !Number.isFinite(v))) return res.writeHead(400).end();
-  if (frames >= MAX_FRAMES) return res.writeHead(429).end();
+  const [w, h, s, i] = ["w", "h", "s", "i"].map((k) => Number(q.get(k)));
+  const nums = ["a", "b", "g", "fov", "t"].map((k) => Number(q.get(k)));
+  const ok = [w, h, s, i].every(Number.isSafeInteger) && w > 0 && h > 0 && w * h <= MAX_PIXELS && s > 0 && s < 1e14 && i >= 0 && i < MAX_FRAMES;
+  if (!ok || nums.some((v) => !Number.isFinite(v))) return reject(res, 400, `bad query (stale camera.html?) ${q}`);
+  if (frames >= MAX_TOTAL) return reject(res, 429, "frame cap reached");
   const chunks = [];
   let size = 0;
   for await (const c of req) {
@@ -29,17 +30,26 @@ async function record(req, res) {
     if (size > w * h) return res.writeHead(413).end();
     chunks.push(c);
   }
-  if (size !== w * h) return res.writeHead(400).end();
-  const n = frames++;
+  if (size !== w * h) return reject(res, 400, `body ${size} B, expected ${w * h}`);
+  // Named by the client's capture index (uploads land out of order); one dir per client recording.
+  const session = join(root, "recordings", new Date(s).toISOString().replace(/[:.]/g, "-"));
   await mkdir(session, { recursive: true });
-  await writeFile(join(session, `${String(n).padStart(4, "0")}.luma`), Buffer.concat(chunks));
-  await appendFile(join(session, "meta.csv"), `${n},${w},${h},${angles.join(",")}\n`);
+  await writeFile(join(session, `${String(i).padStart(4, "0")}.luma`), Buffer.concat(chunks), { flag: "wx" }); // a repeated index fails
+  frames++;
+  await appendFile(join(session, "meta.csv"), `${i},${w},${h},${nums.join(",")}\n`);
   res.writeHead(204).end();
+}
+
+// Rejected uploads are logged once per reason: the phone HUD is the only other place they show.
+const seen = new Set();
+function reject(res, code, why) {
+  if (!seen.has(code)) (seen.add(code), console.warn(`rec ${code}: ${why}`));
+  res.writeHead(code).end();
 }
 
 createServer(async (req, res) => {
   if (req.method === "POST" && new URL(req.url, "http://x").pathname === "/rec") {
-    return RECORD ? record(req, res).catch(() => res.writeHead(500).end()) : res.writeHead(403).end();
+    return RECORD ? record(req, res).catch((e) => reject(res, 500, e.message)) : res.writeHead(403).end();
   }
   const path = normalize(join(root, decodeURIComponent(new URL(req.url, "http://x").pathname)));
   if (!allowed.some((dir) => (path + sep).startsWith(dir))) return res.writeHead(403).end();
@@ -50,8 +60,9 @@ createServer(async (req, res) => {
       "Content-Type": types[extname(file)] ?? "application/octet-stream",
       "Cross-Origin-Opener-Policy": "same-origin",
       "Cross-Origin-Embedder-Policy": "require-corp",
+      "Cache-Control": "no-store", // phones kept a stale camera.html/wasm across server restarts
     }).end(body);
   } catch {
     res.writeHead(404).end();
   }
-}).listen(port, "127.0.0.1", () => console.log(`serving ${root} on http://localhost:${port}/web/${RECORD ? ` (recording to ${session})` : ""}`));
+}).listen(port, "127.0.0.1", () => console.log(`serving ${root} on http://localhost:${port}/web/${RECORD ? ` (recording to recordings/)` : ""}`));

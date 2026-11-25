@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Updated** | 2026-11-24 |
+| **Updated** | 2026-11-25 |
 | **Goal** | |
 
 Status: `Planned` · `In progress` · `Done` · `Dropped`. Each milestone has a record in [milestones/](milestones/) named `M0X_MILESTONE_TITLE.md`.
