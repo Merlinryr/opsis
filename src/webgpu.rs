@@ -109,6 +109,8 @@ pub struct Wgpu {
     layout: wgpu::BindGroupLayout,
     pipes: [wgpu::RenderPipeline; 5],
     pool: Pool,
+    /// Passes recorded since the last read, submitted together: one submit per pass was ~26 per frame.
+    enc: RefCell<Option<wgpu::CommandEncoder>>,
 }
 
 fn err(e: impl std::fmt::Display) -> JsValue {
@@ -166,7 +168,7 @@ impl Wgpu {
             })
         };
         let pipes = [pipe("luma"), pipe("blur"), pipe("down"), pipe("fast"), pipe("nms")];
-        Ok(Self { device, queue, layout, pipes, pool: Pool::default() })
+        Ok(Self { device, queue, layout, pipes, pool: Pool::default(), enc: RefCell::default() })
     }
 
     fn texture(&self, w: usize, h: usize, format: wgpu::TextureFormat, data: Option<&[u8]>) -> Tex {
@@ -265,7 +267,8 @@ impl Gpu for Wgpu {
             ],
         });
         let view = out.t.create_view(&Default::default());
-        let mut enc = self.device.create_command_encoder(&Default::default());
+        let mut enc = self.enc.borrow_mut();
+        let enc = enc.get_or_insert_with(|| self.device.create_command_encoder(&Default::default()));
         {
             let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -281,7 +284,6 @@ impl Gpu for Wgpu {
             rp.set_bind_group(0, &group, &[]);
             rp.draw(0..3, 0..1);
         }
-        self.queue.submit([enc.finish()]);
         Ok(out)
     }
 
@@ -292,7 +294,7 @@ impl Gpu for Wgpu {
     /// One submit and one wait for all textures: each separate map_async is a full GPU round trip.
     async fn read_all(&self, ts: &[Tex]) -> Result<Vec<Vec<u8>>, JsValue> {
         let row = |t: &Tex| (t.w * 4).next_multiple_of(256); // WebGPU copy rows must be 256-byte aligned
-        let mut enc = self.device.create_command_encoder(&Default::default());
+        let mut enc = self.enc.take().unwrap_or_else(|| self.device.create_command_encoder(&Default::default()));
         let bufs: Vec<_> = ts
             .iter()
             .map(|t| {

@@ -26,6 +26,7 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: WebGPU front end records all passes into one command encoder and submits once with the readback copies; it used to make one submit per pass, ~21 per frame at 4 levels. Parity PASS byte-exact on desktop WebGL2 + WebGPU. wasm 128.5 KB gzip. **Not timed on the phone:** the earlier screenshot HUD read `gpu 10.9` with no `enc`/`wait` split, so it ran a build older than the split. Next: phone run reading `gpu enc` vs `wait`, to decide between shader work (wait-bound) and less per-pass setup (enc-bound).
 - 2026-11-26: V1 closed. `WEBAR_REPLAY_MAX_ERR=m` fails the replay if the closure gap or forward z spread exceeds m (units: camera height = 1). Walk `10-43-54` passes at 0.15. Covered-lens `10-44-12` fails it on z spread 0.21 (not a constant-height take). Recordings are gitignored, so this runs locally only.
 - 2026-11-26: Replays of the two new IMU recordings on 422e6fb.
   - `10-43-54` (walk): 574/599 Normal, lost 4, z 0.94–1.09, closure 0.044 (0.9% of a 5.1 m path), track mean 3.9 / max 7.3 ms.
