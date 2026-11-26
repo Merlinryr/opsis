@@ -71,7 +71,7 @@
       // (the browser presents during the await, which would show the frame before it is drawn).
       // No willReadFrequently: that keeps the canvas on the CPU; the GPU copies it straight into a texture.
       const work = new OffscreenCanvas(w, h).getContext("2d");
-      let emaMs = 0, emaFps = 0, emaSplit = [0, 0, 0], last = performance.now(), anchor = null;
+      let emaMs = 0, emaFps = 0, emaSplit = [0, 0, 0], last = performance.now(), anchor = null, tracked = 0; // tracked: time of the last Normal/Limited frame
 
       // Project world point X with pose array p (see Tracker.pose); null if behind the camera.
       const project = (p, X) => {
@@ -132,7 +132,10 @@
             const R = p.slice(6, 15), dz = R[8]; // world z of the optical axis
             if (dz < -0.2) { const t = -p[5] / dz; anchor = [p[3] + R[2] * t, p[4] + R[5] * t]; }
           }
-          if (anchor && (p[0] === 1 || p[0] === 2)) { // hidden while lost: its pose is stale
+          const now = performance.now();
+          if (p[0] === 1 || p[0] === 2) tracked = now;
+          // Lost under 1 s (a pan, a quick cover): keep showing it, turning with the gyro from the last position.
+          if (anchor && p[0] !== 0 && now - tracked < 1000) {
             const [ax, ay] = anchor, e = 0.15;
             const v = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => [ax + (i & 1 ? e : -e), ay + (i & 2 ? e : -e), i & 4 ? 2 * e : 0]);
             ctx.strokeStyle = p[0] === 1 ? "#0f0" : "#fa0";

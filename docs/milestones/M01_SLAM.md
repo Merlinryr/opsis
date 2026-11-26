@@ -26,6 +26,7 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: `camera.html` keeps drawing the cube for up to 1 s after tracking is lost, from the last position with the live gyro rotation, in orange like Limited. Lost longer than that hides it as before. Page loads without errors on desktop; not tried on the phone.
 - 2026-11-26: Looked into "hold tracking through fast pans" on `11-55-10` before writing code, and changed nothing. Gyro prediction is already in: `orient()` applies the current sensor rotation before guided matching, and floor descriptors are world-oriented.
   - Loss 1 (frames 78–90, under 21°/s): fingers over the lens, with keypoints at 400 → 90 at the minimum FAST threshold.
   - Loss 2 (149–165, up to ~110°/s): heavy motion blur (keypoints 360 → 70), then an unmapped wall area. Inlier share stayed at 60–80% while matches fell, so it lacks corners and has no bad poses.
