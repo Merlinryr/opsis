@@ -93,7 +93,8 @@ const MATCH_DIST: u32 = 64;
 const INLIER_PX: f32 = 4.0;
 const NORMAL_INLIERS: usize = 25;
 const LIMITED_INLIERS: usize = 15;
-const REINIT_AFTER_LOST: u32 = 90; // frames (~3 s) of failed relocalization: then re-seed, if the map is too thin to relocalize
+const REINIT_AFTER_LOST: u32 = 90; // frames (~3 s) of failed relocalization: then re-seed, the old map kept as the stash
+const STASH_EVERY: u32 = 5; // tracked frames between relocalization tries against the stash (each is a global match)
 const RATIO: f32 = 0.8; // Lowe ratio, guided and global matching
 const MAX_MISSES: u8 = 10;
 const MIN_PARALLAX_COS: f32 = 0.99756; // cos(4 deg)
@@ -150,6 +151,12 @@ pub struct Slam {
     /// nothing in the solve uses them.
     pub metres_per_unit: Option<f32>,
     pub imu_lag_ms: Option<f32>,
+    /// The map from before the last re-seed, whose frame placed content lives in. Tried every `STASH_EVERY`
+    /// frames (and every lost frame); on a confirmed hit the current map is merged into it.
+    stash: Vec<MapPoint>,
+    /// Replay metrics, cumulative.
+    pub reseeds: u32,
+    pub merges: u32,
 }
 
 /// One 2D-3D correspondence: world point and camera-frame ray.
@@ -158,7 +165,7 @@ type Pair = (V3, V3);
 impl Slam {
     pub fn new(k: Intrinsics) -> Self {
         let r = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, matches: 0, old: [0; 5], lost_frames: 0, frame: 0, rng: 0x2545_F491, v: [0.0; 3], last_sensor: r, keyframes: Vec::new(), last_kf: 0, next_id: 0, last_t: f64::NAN, motion: Vec::new(), metres_per_unit: None, imu_lag_ms: None }
+        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, matches: 0, old: [0; 5], lost_frames: 0, frame: 0, rng: 0x2545_F491, v: [0.0; 3], last_sensor: r, keyframes: Vec::new(), last_kf: 0, next_id: 0, last_t: f64::NAN, motion: Vec::new(), metres_per_unit: None, imu_lag_ms: None, stash: Vec::new(), reseeds: 0, merges: 0 }
     }
 
     pub fn keyframes(&self) -> usize {
@@ -217,20 +224,8 @@ impl Slam {
         if self.state == State::Initializing {
             return self.initialize(kps, desc);
         }
-        // Lost: relocalize by matching against the whole map (ratio test, so repeating tiles cannot
-        // snap the pose one tile over), then confirm with guided matching from the candidate pose, which
-        // alone decides the state. Global matches agree only 13-21% even when right, and the room replay
-        // relocalized 30 units away, below the floor, as Normal with 26/185 inliers (map culled with it).
         let lost = self.state == State::Lost;
-        let (mut guided, mut matches, mut c, mut yaw, mut inl) = self.solve(kps, desc, sensor, lost);
-        // Confirmation is the gate, so a weak global result is enough to try it: after a blackout on tiles,
-        // global matches gave 6-15 inliers of ~200, some near the true pose (corridor replay).
-        if lost && inl.iter().filter(|&&b| b).count() >= LIMITED_INLIERS / 2 {
-            let last = (self.c, self.yaw, self.r, self.state);
-            (self.c, self.yaw, self.r, self.state) = (c, yaw, self.rotation(sensor, yaw), State::Limited);
-            (guided, matches, c, yaw, inl) = self.solve(kps, desc, sensor, false);
-            (self.c, self.yaw, self.r, self.state) = last;
-        }
+        let (guided, matches, c, yaw, inl) = if lost { self.relocalize(kps, desc, sensor) } else { self.solve(kps, desc, sensor, false) };
         self.inliers = inl.iter().filter(|&&b| b).count();
         self.matches = matches.len();
         let mut is_inlier = vec![false; self.map.len()];
@@ -253,7 +248,8 @@ impl Slam {
         // (room replay: relocalized 26 units away at z -2.56 with 43 guided inliers). Nor does the height
         // jump while lost (room replay, frame 191: relocalized 20 units away at z 4-7, confirmed 13%).
         self.state = match self.inliers {
-            _ if c[2] <= 0.0 || (lost && (c[2] - self.c[2]).abs() > MAX_RELOC_DZ) => State::Lost,
+            n if lost && self.confirmed(n, matches.len(), c) => State::Normal,
+            _ if lost || c[2] <= 0.0 => State::Lost,
             n if n >= NORMAL_INLIERS && n * 8 >= matches.len() => State::Normal,
             // Leaving Lost takes Normal quality: Lost -> Limited relocalizations were 1-8 units off on the
             // covered-lens replay (2026-11-26) and then became the Lost "last pose".
@@ -261,15 +257,29 @@ impl Slam {
             _ => State::Lost,
         };
         if self.state == State::Lost {
-            // Keep the last pose and keep relocalizing against the map. A re-seed threw the map away mid-recording
-            // and moved the origin (covered-lens replay, 2026-11-26), so only a map too thin to relocalize is
-            // replaced. shortcut: in a genuinely new place it stays Lost until the mapped area is back in view;
-            // upgrade to keeping a second map and merging on relocalization.
+            // Keep the last pose and keep relocalizing, against the stash too. shortcut: a stash hit while lost
+            // drops the current map (no pose in it to align by); upgrade by aligning through older frames.
             self.v = [0.0; 3];
             self.motion.clear();
             self.lost_frames += 1;
-            if self.lost_frames >= REINIT_AFTER_LOST && self.map.len() < MIN_INIT_POINTS {
-                self.state = State::Initializing;
+            if self.try_stash(kps, desc, sensor, false) {
+                return;
+            }
+            // Long lost in a new place: re-seed from the floor, keeping the old map as the stash so returning
+            // to it merges back (a plain re-seed moved the origin ~1 m, covered-lens replay 2026-11-26). Only
+            // on frames that can seed: a covered lens just stays Lost. shortcut: one stash, always the oldest
+            // map (placed content lives in its frame); a second re-seed drops the current map.
+            if self.lost_frames >= REINIT_AFTER_LOST {
+                let old = std::mem::take(&mut self.map);
+                self.initialize(kps, desc);
+                if self.state != State::Normal {
+                    self.map = old;
+                } else {
+                    self.reseeds += 1;
+                    if self.stash.is_empty() && old.len() >= MIN_INIT_POINTS {
+                        self.stash = old;
+                    }
+                }
             }
             return;
         }
@@ -279,6 +289,9 @@ impl Slam {
         (self.c, self.yaw) = (c, yaw);
         self.r = self.rotation(sensor, yaw);
         self.estimate_scale(accel, dt);
+        if self.frame % STASH_EVERY == 0 && self.try_stash(kps, desc, sensor, true) {
+            return;
+        }
 
         // Map upkeep, only on well-tracked frames (one blurry frame must not wipe the map):
         // in-view points that are not inliers accumulate misses and get culled; unmatched keypoints
@@ -594,6 +607,66 @@ impl Slam {
             (self.map, self.c, self.state, self.inliers, self.lost_frames, self.v) = (map, c, State::Normal, 0, 0, [0.0; 3]);
             self.keyframes.clear(); // they refer to the old map's points
         }
+    }
+
+    /// Lost: match against the whole map (ratio test, so repeating tiles cannot snap the pose one tile over),
+    /// then confirm with guided matching from the candidate pose, whose result alone decides the state.
+    /// Global matches agree only 13-21% even when right, so a weak global result is enough to try the
+    /// confirmation: after a blackout on tiles they gave 6-15 inliers of ~200, some near the true pose.
+    fn relocalize(&mut self, kps: &[Keypoint], desc: &[Descriptor], sensor: &M3) -> (Vec<(usize, Guided)>, Vec<(usize, usize)>, V3, f32, Vec<bool>) {
+        let (guided, matches, c, yaw, inl) = self.solve(kps, desc, sensor, true);
+        if inl.iter().filter(|&&b| b).count() < LIMITED_INLIERS / 2 {
+            return (guided, matches, c, yaw, inl);
+        }
+        let last = (self.c, self.yaw, self.r, self.state, self.v);
+        (self.c, self.yaw, self.r, self.state, self.v) = (c, yaw, self.rotation(sensor, yaw), State::Limited, [0.0; 3]);
+        let out = self.solve(kps, desc, sensor, false);
+        (self.c, self.yaw, self.r, self.state, self.v) = last;
+        out
+    }
+
+    /// Normal quality, from `self.c`: the bar to leave Lost or to merge into the stash. A camera under the
+    /// floor (z = 0) or a height jump is a wrong pose however many inliers (room replay: 26 units away at
+    /// z -2.56 with 43 inliers; 20 units away at z 4-7 confirmed 13%). The height bound also bounds the
+    /// stash merge scale.
+    fn confirmed(&self, inliers: usize, matches: usize, c: V3) -> bool {
+        c[2] > 0.0 && (c[2] - self.c[2]).abs() <= MAX_RELOC_DZ && inliers >= NORMAL_INLIERS && inliers * 8 >= matches
+    }
+
+    /// Relocalize against the stash; on a confirmed hit it becomes the map again. `keep`: the current pose is
+    /// good, so the current map is carried into the stash frame (similarity: every seed assumed
+    /// `CAMERA_HEIGHT`, so the maps differ in scale by the height ratio) and appended.
+    fn try_stash(&mut self, kps: &[Keypoint], desc: &[Descriptor], sensor: &M3, keep: bool) -> bool {
+        if self.stash.is_empty() {
+            return false;
+        }
+        std::mem::swap(&mut self.map, &mut self.stash);
+        let (_, matches, c, yaw, inl) = self.relocalize(kps, desc, sensor);
+        let n = inl.iter().filter(|&&b| b).count();
+        if !self.confirmed(n, matches.len(), c) {
+            std::mem::swap(&mut self.map, &mut self.stash);
+            return false;
+        }
+        for (&(mi, _), _) in matches.iter().zip(&inl).filter(|(_, ok)| **ok) {
+            self.map[mi].seen = self.frame; // the restored points must not be first to go on eviction
+        }
+        let mut current = std::mem::take(&mut self.stash);
+        if keep {
+            let (s, rz) = (c[2] / self.c[2], rot_z(yaw - self.yaw));
+            let to_old = |x: V3| add(c, scale(mulv(&rz, sub(x, self.c)), s));
+            for p in &mut current {
+                p.x = to_old(p.x);
+                p.seed = p.seed.map(|(c1, d1)| (to_old(c1), mulv(&rz, d1)));
+                p.dist *= s;
+            }
+            self.map.append(&mut current);
+            self.metres_per_unit = None; // map units changed
+        }
+        (self.c, self.yaw, self.r, self.state, self.inliers, self.v) = (c, yaw, self.rotation(sensor, yaw), State::Normal, n, [0.0; 3]);
+        self.motion.clear();
+        self.keyframes.clear(); // they refer to poses in the other frame
+        self.merges += 1;
+        true
     }
 
     /// Matches (guided from the current pose, or global) and the RANSAC pose from them.
@@ -957,33 +1030,45 @@ mod tests {
         }
     }
 
-    /// Long lost with a map: keeps relocalizing against it. Only a thin map gets re-seeded (at the last x/y).
-    #[test]
-    fn reinitializes_after_being_lost() {
-        let mut s = 11;
-        let w = world(&mut s);
+    /// Long lost, then a scene the map does not know (same floor, new descriptors), seen from 0.5 to the side
+    /// at height `h`: re-seeds at the last x/y, keeping the old map as the stash. A view of both merges the
+    /// new map back into the old frame: the pose snaps to truth and merged floor points sit at z = 0.
+    fn reseed_then_merge(h: f32) {
+        let (mut s, mut s2) = (11, 99);
+        let a = world(&mut s);
+        let b: Vec<_> = world(&mut s2).into_iter().zip(&a).map(|((_, d), (x, _))| (*x, d)).collect();
+        let both: Vec<_> = a.iter().zip(&b).enumerate().map(|(i, (pa, pb))| if i % 2 == 0 { *pa } else { *pb }).collect();
         let sensor = camera_from_orientation(0.0, 45.0, 0.0, 0.0);
         let mut slam = Slam::new(K);
-        let (kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &w);
+        let (kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &a);
         slam.update(&kps, &desc, &sensor, f64::NAN, None);
-        assert_eq!(slam.state, State::Normal);
         for _ in 0..REINIT_AFTER_LOST {
-            slam.update(&[], &[], &sensor, f64::NAN, None); // e.g. covered lens
+            slam.update(&[], &[], &sensor, f64::NAN, None); // covered lens: cannot seed, stays Lost
         }
-        assert_eq!(slam.state, State::Lost);
-        let (kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &w);
+        assert_eq!((slam.state, slam.reseeds), (State::Lost, 0));
+        let truth = [0.5, 0.0, h];
+        let (kps, desc) = observe(&slam, &sensor, truth, &b);
         slam.update(&kps, &desc, &sensor, f64::NAN, None);
-        assert_eq!(slam.state, State::Normal, "relocalized against the kept map");
-        slam.map.truncate(MIN_INIT_POINTS - 1);
-        for _ in 0..REINIT_AFTER_LOST {
-            slam.update(&[], &[], &sensor, f64::NAN, None);
+        assert_eq!((slam.state, slam.reseeds), (State::Normal, 1));
+        assert_eq!(slam.c, [0.0, 0.0, CAMERA_HEIGHT], "new map seeded at the last x/y");
+        let (kps, desc) = observe(&slam, &sensor, truth, &both);
+        for _ in 0..STASH_EVERY {
+            slam.update(&kps, &desc, &sensor, f64::NAN, None);
         }
-        assert_eq!(slam.state, State::Initializing);
-        // Floor visible again from elsewhere: re-seeds at the last known x/y.
-        let (kps, desc) = observe(&slam, &sensor, [0.5, 0.0, 1.0], &w);
-        slam.update(&kps, &desc, &sensor, f64::NAN, None);
-        assert_eq!(slam.state, State::Normal);
-        assert!(norm(sub(slam.c, [0.0, 0.0, CAMERA_HEIGHT])) < 1e-6, "{:?}", slam.c);
+        assert_eq!((slam.state, slam.merges), (State::Normal, 1));
+        assert!(norm(sub(slam.c, truth)) < 0.02, "merged pose {:?}", slam.c);
+        let floor: Vec<f32> = slam.map.iter().filter(|m| m.seed.is_some()).map(|m| m.x[2]).collect();
+        assert!(floor.iter().all(|z| z.abs() < 0.02), "floor z after merge {:?}", floor.iter().fold(0f32, |m, z| m.max(z.abs())));
+    }
+
+    #[test]
+    fn reseeds_then_merges_back() {
+        reseed_then_merge(CAMERA_HEIGHT);
+    }
+
+    #[test]
+    fn merge_corrects_the_seed_scale() {
+        reseed_then_merge(1.2);
     }
 
     /// A third of the corners sit on a 0.4-high platform (a stool top, a box). They are seeded as

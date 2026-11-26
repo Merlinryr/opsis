@@ -78,7 +78,7 @@ fn replay() {
         (ms_sum, ms_max) = (ms_sum + ms, ms_max.max(ms));
         states[s.state as usize] += 1;
         if let Some(o) = occlude.as_ref().filter(|o| dir_mark == '>' && n >= o.start && recovered.is_none()) {
-            reseeded |= s.state == State::Initializing;
+            reseeded = s.reseeds > 0;
             if n >= o.end && (s.state == State::Normal || s.state == State::Limited) {
                 recovered = Some((n - o.end, s.c));
             }
@@ -102,6 +102,7 @@ fn replay() {
     let (a, b) = back.expect("start frame not tracked on the way back");
     let gap = (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f32>().sqrt();
     println!("\nframes {} | init {} normal {} limited {} lost {}", order.len(), states[0], states[1], states[2], states[3]);
+    if let Some(s) = &slam { println!("re-seeds {} | stash merges {}", s.reseeds, s.merges); }
     println!("track (front-end CPU half + SLAM) mean {:.2} ms, max {ms_max:.2} ms", ms_sum / order.len() as f64);
     let o = slam.as_ref().map_or([0; 5], |s| s.old);
     println!("old points in view (>= 50 frames): {} | no keypoint {} | too far {} | ambiguous {} | outlier {} | inlier {}", o.iter().sum::<u32>(), o[0], o[1], o[2], o[3], o[4]);

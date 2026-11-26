@@ -26,6 +26,10 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Second map with merge. After 90 lost frames the tracker re-seeds again, but only on a frame that can seed, so a covered lens just stays Lost. The old map is kept as the stash, and it is tried every 5 tracked frames and on every lost frame, with the same Normal-quality gate as leaving Lost. On a hit while tracking, the new map is carried into the old frame (translation + yaw + scale, since each seed assumes camera height 1) and appended. On a hit while lost, the stash replaces the current map. Pose, `v`, `motion`, keyframes and metric scale reset on merge.
+  - Replays: walk `10-43-54` identical (573/8/7, closure 0.066, 0 re-seeds). Covered-lens `10-44-12`: 1 re-seed, 1 merge, lost 299 → 267, closure 0.003. `14-02-15`/`14-02-35` identical. 38 host tests (re-seed then merge, at true height 1.0 and 1.2).
+  - Between the re-seed and the merge, placed content sits offset (new map frame), then snaps back.
+  - shortcut: one stash, always the oldest map; a second re-seed drops the current map. A stash hit while lost drops the current map.
 - 2026-11-26: WebGPU front end records all passes into one command encoder and submits once with the readback copies; it used to make one submit per pass, ~21 per frame at 4 levels. Parity PASS byte-exact on desktop WebGL2 + WebGPU. wasm 128.5 KB gzip. **Not timed on the phone:** the earlier screenshot HUD read `gpu 10.9` with no `enc`/`wait` split, so it ran a build older than the split. Next: phone run reading `gpu enc` vs `wait`, to decide between shader work (wait-bound) and less per-pass setup (enc-bound).
 - 2026-11-26: V1 closed. `WEBAR_REPLAY_MAX_ERR=m` fails the replay if the closure gap or forward z spread exceeds m (units: camera height = 1). Walk `10-43-54` passes at 0.15. Covered-lens `10-44-12` fails it on z spread 0.21 (not a constant-height take). Recordings are gitignored, so this runs locally only.
 - 2026-11-26: Replays of the two new IMU recordings on 422e6fb.
