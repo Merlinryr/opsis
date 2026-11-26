@@ -26,6 +26,7 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Replay of `12-06-23` on ccc589e: 593 Normal of 599, 0 Limited, 0 lost, closure 0.003 (0.1% of a 3.7 m path), z 0.94–1.03, track mean 2.3 / max 4.4 ms. Passes V1 at 0.15. Best run so far. Old-point inlier share 37% (walk `10-43-54`: 24%).
 - 2026-11-26: `camera.html` keeps drawing the cube for up to 1 s after tracking is lost, from the last position with the live gyro rotation, in orange like Limited. Lost longer than that hides it as before. Page loads without errors on desktop; not tried on the phone.
 - 2026-11-26: Looked into "hold tracking through fast pans" on `11-55-10` before writing code, and changed nothing. Gyro prediction is already in: `orient()` applies the current sensor rotation before guided matching, and floor descriptors are world-oriented.
   - Loss 1 (frames 78–90, under 21°/s): fingers over the lens, with keypoints at 400 → 90 at the minimum FAST threshold.
