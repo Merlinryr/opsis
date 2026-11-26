@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Updated** | 2026-11-26 |
-| **Goal** | |
+| **Updated** | 2026-11-27 |
+| **Goal** | Ship Opsis: a lightweight, engine-agnostic WebAR SDK (SLAM first, then image tracking and VPS) |
 
 Status: `Planned` · `In progress` · `Done` · `Dropped`. Each milestone has a record in [milestones/](milestones/) named `M0X_MILESTONE_TITLE.md`.
 

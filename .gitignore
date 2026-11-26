@@ -1,4 +1,6 @@
 /target
-/pkg
 /.claude/settings.local.json
 /recordings
+/packages/opsis/wasm
+/packages/opsis/dist
+node_modules

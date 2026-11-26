@@ -20,3 +20,6 @@ web-sys = { version = "0.3", features = [
     "HtmlCanvasElement", "WebGl2RenderingContext", "WebGlProgram", "WebGlShader",
     "WebGlTexture", "OffscreenCanvas", "OffscreenCanvasRenderingContext2d", "ImageData", "WebGlFramebuffer", "WebGlUniformLocation",
 ] }
+
+[features]
+parity = []

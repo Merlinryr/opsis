@@ -2,11 +2,14 @@
 <meta charset="utf-8">
 <title>opsis parity</title>
 <canvas id="gl" width="1" height="1" hidden></canvas>
-<p><a href="camera.html">Live camera view →</a></p>
+<p>Examples: <a href="vanilla.html">Canvas 2D</a> · <a href="webgl.html">WebGL2</a> · <a href="webgpu.html">WebGPU</a> · <a href="three.html">three.js</a> · <a href="babylon.html">Babylon.js</a> · <a href="playcanvas.html">PlayCanvas</a> · <a href="aframe.html">A-Frame</a> · <a href="camera.html">diagnostic camera</a></p>
+<p>Parity needs <code>tools/build-web.ps1 -Parity</code>.</p>
 <pre id="out">running…</pre>
 <script type="module">
-  import init, { parity_webgl, parity_webgpu } from "../pkg/opsis.js";
+  import init, * as wasm from "../packages/opsis/wasm/opsis.js";
+  const { parity_webgl, parity_webgpu } = wasm;
   const out = document.getElementById("out");
+  if (!parity_webgl) throw (out.textContent = "parity not in this build: run tools/build-web.ps1 -Parity");
   const run = async (name, f) => {
     try { return await f(); } catch (e) { return `FAIL ${name}\nerror: ${e}`; }
   };

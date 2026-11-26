@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>opsis + three.js</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.181.0/build/three.module.min.js" } }</script>
+<div id="app"><canvas id="c"></canvas></div>
+<p id="status">Tap Start, then point at the floor. Tap to move the cube.</p>
+<button id="start">Start</button>
+<button id="recenter" hidden style="position:fixed;top:12px;right:12px;font:inherit">Recenter</button>
+<script type="module">
+  import * as THREE from "three";
+  import { start } from "../packages/opsis/dist/index.js";
+  import { updateCamera } from "../packages/opsis/dist/three.js";
+
+  const canvas = document.getElementById("c"), status = document.getElementById("status");
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setPixelRatio(devicePixelRatio);
+  const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera();
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 3));
+  const cube = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.2).translate(0, 0.1, 0), new THREE.MeshStandardMaterial({ color: 0x0a84ff }));
+  cube.visible = false;
+  scene.add(cube);
+  let tap = null;
+  canvas.onpointerdown = (e) => (tap = [e.clientX / innerWidth, e.clientY / innerHeight]);
+
+  document.getElementById("start").onclick = async (e) => {
+    e.target.hidden = true;
+    // ?background=tracked draws the tracked frame in sync with the pose instead of the live video.
+    const background = new URLSearchParams(location.search).get("background") ?? "video";
+    const session = await start({ mount: document.getElementById("app"), background }).catch((err) => (status.textContent = err));
+    const recenter = document.getElementById("recenter");
+    recenter.hidden = false;
+    recenter.onclick = () => (session.recenter(), (cube.visible = false));
+    session.onStatus((s) => (status.textContent = s));
+    session.onFrame((f) => {
+      const aspect = innerWidth / innerHeight;
+      renderer.setSize(innerWidth, innerHeight, false);
+      if (!updateCamera(camera, f, aspect)) return;
+      const place = tap ?? (!cube.visible && f.state === "normal" ? [0.5, 0.5] : null);
+      const hit = place && f.hitTest(place[0], place[1], aspect)[0]?.position;
+      if (hit) (cube.position.fromArray(hit), (cube.visible = true));
+      tap = null;
+      status.textContent = `${session.backend} · ${f.state} · map ${f.mapSize}`;
+      renderer.render(scene, camera);
+    });
+  };
+</script>

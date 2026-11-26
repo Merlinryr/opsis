@@ -1,0 +1,39 @@
+{
+  "name": "opsis",
+  "version": "0.1.0",
+  "description": "Markerless WebAR world tracking (SLAM) on WebGPU and WebGL, for any engine.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./three": {
+      "types": "./dist/three.d.ts",
+      "default": "./dist/three.js"
+    },
+    "./babylon": {
+      "types": "./dist/babylon.d.ts",
+      "default": "./dist/babylon.js"
+    },
+    "./playcanvas": {
+      "types": "./dist/playcanvas.d.ts",
+      "default": "./dist/playcanvas.js"
+    }
+  },
+  "files": [
+    "dist",
+    "wasm/opsis.js",
+    "wasm/opsis.d.ts",
+    "wasm/opsis_bg.wasm"
+  ],
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

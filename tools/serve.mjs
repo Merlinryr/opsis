@@ -1,12 +1,12 @@
-// Dev static server: only /examples and /pkg (it may be exposed through a public tunnel). Sends COOP/COEP so wasm threads can be tested later.
+// Dev static server: only /examples and /packages (it may be exposed through a public tunnel). Sends COOP/COEP so wasm threads can be tested later.
 // With OPSIS_RECORD=1 it also accepts POST /rec frames from camera.html?record=1 into recordings/<session>/ (see M01 V1 replay).
 import { createServer } from "node:http";
 import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 
 const root = normalize(join(import.meta.dirname, ".."));
-const allowed = ["examples", "pkg"].map((d) => join(root, d) + sep);
-const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };
+const allowed = ["examples", "packages"].map((d) => join(root, d) + sep);
+const types = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };
 const port = Number(process.env.PORT ?? 8081);
 
 const RECORD = process.env.OPSIS_RECORD === "1";

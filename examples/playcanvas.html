@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>opsis + PlayCanvas</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{ "imports": { "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.14.0/build/playcanvas.mjs" } }</script>
+<div id="app"><canvas id="c"></canvas></div>
+<p id="status">Tap Start, then point at the floor. Tap to move the cube.</p>
+<button id="start">Start</button>
+<script type="module">
+  import * as pc from "playcanvas";
+  import { start } from "../packages/opsis/dist/index.js";
+  import { updateCamera } from "../packages/opsis/dist/playcanvas.js";
+
+  const canvas = document.getElementById("c"), status = document.getElementById("status");
+  const app = new pc.Application(canvas, { graphicsDeviceOptions: { alpha: true } });
+  app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+  app.setCanvasResolution(pc.RESOLUTION_AUTO);
+  const camera = new pc.Entity("camera");
+  camera.addComponent("camera", { clearColor: new pc.Color(0, 0, 0, 0), nearClip: 0.01 });
+  app.root.addChild(camera);
+  const light = new pc.Entity("light");
+  light.addComponent("light", { type: "directional" });
+  light.setEulerAngles(45, 30, 0);
+  app.root.addChild(light);
+  const material = new pc.StandardMaterial();
+  material.diffuse = new pc.Color(0.04, 0.52, 1);
+  material.update();
+  const cube = new pc.Entity("cube");
+  cube.addComponent("render", { type: "box", material });
+  cube.setLocalScale(0.2, 0.2, 0.2);
+  cube.enabled = false;
+  app.root.addChild(cube);
+  app.start();
+  let tap = null;
+  canvas.onpointerdown = (e) => (tap = [e.clientX / innerWidth, e.clientY / innerHeight]);
+
+  document.getElementById("start").onclick = async (e) => {
+    e.target.hidden = true;
+    const session = await start({ mount: document.getElementById("app") }).catch((err) => (status.textContent = err));
+    app.on("update", () => {
+      const f = session.frame, aspect = canvas.clientWidth / canvas.clientHeight;
+      if (!f || !updateCamera(camera, f, aspect)) return;
+      const place = tap ?? (!cube.enabled && f.state === "normal" ? [0.5, 0.5] : null);
+      const hit = place && f.hitTest(place[0], place[1], aspect)[0]?.position;
+      if (hit) (cube.setPosition(hit[0], hit[1] + 0.1, hit[2]), (cube.enabled = true));
+      tap = null;
+      status.textContent = `${session.backend} · ${f.state} · map ${f.mapSize}`;
+    });
+  };
+</script>

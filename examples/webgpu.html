@@ -1,0 +1,77 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>opsis + WebGPU</title>
+<link rel="stylesheet" href="style.css">
+<div id="app"><canvas id="c"></canvas></div>
+<p id="status">Tap Start, then point at the floor. Tap to move the cube.</p>
+<button id="start">Start</button>
+<script type="module">
+  import { start } from "../packages/opsis/dist/index.js";
+
+  const canvas = document.getElementById("c"), status = document.getElementById("status");
+  const device = await (await navigator.gpu?.requestAdapter())?.requestDevice();
+  if (!device) status.textContent = "WebGPU unavailable";
+  const format = navigator.gpu.getPreferredCanvasFormat(), ctx = canvas.getContext("webgpu");
+  ctx.configure({ device, format, alphaMode: "premultiplied" });
+  const module = device.createShaderModule({ code: `
+    struct U { proj: mat4x4f, view: mat4x4f, at: vec4f };
+    @group(0) @binding(0) var<uniform> u: U;
+    struct V { @builtin(position) pos: vec4f, @location(0) n: vec3f };
+    @vertex fn vs(@location(0) p: vec3f) -> V {
+      return V(u.proj * u.view * vec4f(p * 0.1 + vec3f(0, 0.1, 0) + u.at.xyz, 1), abs(p));
+    }
+    @fragment fn fs(v: V) -> @location(0) vec4f {
+      let l = select(select(0.55, 0.75, v.n.x > 0.99), 1.0, v.n.y > 0.99);
+      return vec4f(vec3f(0.04, 0.52, 1.0) * l, 1);
+    }` });
+  const pipeline = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module, entryPoint: "vs", buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }] },
+    fragment: { module, entryPoint: "fs", targets: [{ format }] },
+    depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
+  });
+  const v = [];
+  for (const [a, b, c] of [[0, 1, 2], [1, 2, 0], [2, 0, 1]]) for (const sgn of [-1, 1]) for (const [x, y] of [[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]]) {
+    const q = []; q[a] = sgn; q[b] = x; q[c] = y; v.push(...q);
+  }
+  const vbuf = device.createBuffer({ size: v.length * 4, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(vbuf, 0, new Float32Array(v));
+  const ubuf = device.createBuffer({ size: 36 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const bind = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubuf } }] });
+  let depth = null, anchor = null, tap = null;
+  canvas.onpointerdown = (e) => (tap = [e.clientX / innerWidth, e.clientY / innerHeight]);
+
+  document.getElementById("start").onclick = async (e) => {
+    e.target.hidden = true;
+    const session = await start({ mount: document.getElementById("app") }).catch((err) => (status.textContent = err));
+    session.onFrame((f) => {
+      const w = Math.round(innerWidth * devicePixelRatio), h = Math.round(innerHeight * devicePixelRatio), aspect = w / h;
+      if (canvas.width !== w || canvas.height !== h || !depth) {
+        canvas.width = w; canvas.height = h;
+        depth = device.createTexture({ size: [w, h], format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      }
+      status.textContent = `${session.backend} · ${f.state} · map ${f.mapSize}`;
+      if (f.pose) {
+        const place = tap ?? (!anchor && f.state === "normal" ? [0.5, 0.5] : null);
+        anchor = (place && f.hitTest(place[0], place[1], aspect)[0]?.position) ?? anchor;
+        tap = null;
+      }
+      const draw = f.pose && anchor;
+      if (draw) device.queue.writeBuffer(ubuf, 0, new Float32Array([...f.projectionMatrix(aspect, 0.01, 100, true), ...f.pose.viewMatrix, ...anchor, 0]));
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginRenderPass({
+        colorAttachments: [{ view: ctx.getCurrentTexture().createView(), clearValue: [0, 0, 0, 0], loadOp: "clear", storeOp: "store" }],
+        depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "discard" },
+      });
+      if (draw) {
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bind);
+        pass.setVertexBuffer(0, vbuf);
+        pass.draw(v.length / 3);
+      }
+      pass.end();
+      device.queue.submit([enc.finish()]);
+    });
+  };
+</script>

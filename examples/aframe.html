@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>opsis + A-Frame</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+<div id="app">
+  <a-scene embedded renderer="alpha: true" background="transparent: true" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false">
+    <a-entity id="camera" camera="userHeight: 0" position="0 0 0" look-controls="enabled: false" wasd-controls="enabled: false"></a-entity>
+    <a-box id="cube" width="0.2" height="0.2" depth="0.2" color="#0a84ff" visible="false"></a-box>
+  </a-scene>
+</div>
+<p id="status">Tap Start, then point at the floor. Tap to move the cube.</p>
+<button id="start">Start</button>
+<script type="module">
+  import { start } from "../packages/opsis/dist/index.js";
+  import { updateCamera } from "../packages/opsis/dist/three.js";
+
+  // A-Frame is three.js underneath: drive its THREE camera with the three adapter.
+  const scene = document.querySelector("a-scene"), cube = document.getElementById("cube").object3D, status = document.getElementById("status");
+  let tap = null;
+  scene.addEventListener("pointerdown", (e) => (tap = [e.clientX / innerWidth, e.clientY / innerHeight]));
+
+  document.getElementById("start").onclick = async (e) => {
+    e.target.hidden = true;
+    const session = await start({ mount: document.getElementById("app") }).catch((err) => (status.textContent = err));
+    const camera = document.getElementById("camera").getObject3D("camera");
+    session.onFrame((f) => {
+      const aspect = innerWidth / innerHeight;
+      if (!updateCamera(camera, f, aspect)) return;
+      const place = tap ?? (!cube.visible && f.state === "normal" ? [0.5, 0.5] : null);
+      const hit = place && f.hitTest(place[0], place[1], aspect)[0]?.position;
+      if (hit) (cube.position.set(hit[0], hit[1] + 0.1, hit[2]), (cube.visible = true));
+      tap = null;
+      status.textContent = `${session.backend} · ${f.state} · map ${f.mapSize}`;
+    });
+  };
+</script>

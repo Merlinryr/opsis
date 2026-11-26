@@ -48,6 +48,11 @@ impl Tracker {
         self.cfg.set(cfg);
     }
 
+    /// Drops the map: the next frames start a new one under the current camera.
+    pub fn reset(&self) {
+        *self.slam.borrow_mut() = None;
+    }
+
     pub fn threshold(&self) -> u8 {
         self.cfg.get().fast_threshold
     }

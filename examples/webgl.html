@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>opsis + WebGL2</title>
+<link rel="stylesheet" href="style.css">
+<div id="app"><canvas id="c"></canvas></div>
+<p id="status">Tap Start, then point at the floor. Tap to move the cube.</p>
+<button id="start">Start</button>
+<script type="module">
+  import { start } from "../packages/opsis/dist/index.js";
+
+  const canvas = document.getElementById("c"), status = document.getElementById("status");
+  const gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true });
+  const shader = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+    uniform mat4 proj, view; uniform vec3 at; in vec3 p; out vec3 n;
+    void main() { n = abs(p); gl_Position = proj * view * vec4(p * 0.1 + vec3(0, 0.1, 0) + at, 1); }`));
+  gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+    precision mediump float; in vec3 n; out vec4 c;
+    void main() { float l = n.y > 0.99 ? 1.0 : n.x > 0.99 ? 0.75 : 0.55; c = vec4(vec3(0.04, 0.52, 1.0) * l, 1); }`));
+  gl.bindAttribLocation(prog, 0, "p");
+  gl.linkProgram(prog);
+  const v = [];
+  for (const [a, b, c] of [[0, 1, 2], [1, 2, 0], [2, 0, 1]]) for (const sgn of [-1, 1]) for (const [u, w] of [[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]]) {
+    const q = []; q[a] = sgn; q[b] = u; q[c] = w; v.push(...q);
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.enable(gl.DEPTH_TEST);
+  const loc = (n) => gl.getUniformLocation(prog, n);
+  let anchor = null, tap = null;
+  canvas.onpointerdown = (e) => (tap = [e.clientX / innerWidth, e.clientY / innerHeight]);
+
+  document.getElementById("start").onclick = async (e) => {
+    e.target.hidden = true;
+    const session = await start({ mount: document.getElementById("app") }).catch((err) => (status.textContent = err));
+    session.onFrame((f) => {
+      canvas.width = innerWidth * devicePixelRatio; canvas.height = innerHeight * devicePixelRatio;
+      const aspect = canvas.width / canvas.height;
+      status.textContent = `${session.backend} · ${f.state} · map ${f.mapSize}`;
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      if (!f.pose) return;
+      const place = tap ?? (!anchor && f.state === "normal" ? [0.5, 0.5] : null);
+      anchor = (place && f.hitTest(place[0], place[1], aspect)[0]?.position) ?? anchor;
+      tap = null;
+      if (!anchor) return;
+      gl.useProgram(prog);
+      gl.uniformMatrix4fv(loc("proj"), false, f.projectionMatrix(aspect));
+      gl.uniformMatrix4fv(loc("view"), false, f.pose.viewMatrix);
+      gl.uniform3fv(loc("at"), anchor);
+      gl.drawArrays(gl.TRIANGLES, 0, v.length / 3);
+    });
+  };
+</script>

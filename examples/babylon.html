@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>opsis + Babylon.js</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.babylonjs.com/v8.40.0/babylon.js"></script>
+<div id="app"><canvas id="c"></canvas></div>
+<p id="status">Tap Start, then point at the floor. Tap to move the cube.</p>
+<button id="start">Start</button>
+<script type="module">
+  import { start } from "../packages/opsis/dist/index.js";
+  import { updateCamera } from "../packages/opsis/dist/babylon.js";
+
+  const canvas = document.getElementById("c"), status = document.getElementById("status");
+  const engine = new BABYLON.Engine(canvas, true, { alpha: true });
+  const scene = new BABYLON.Scene(engine);
+  scene.useRightHandedSystem = true;
+  scene.clearColor = new BABYLON.Color4(0, 0, 0, 0);
+  const camera = new BABYLON.FreeCamera("camera", BABYLON.Vector3.Zero(), scene);
+  camera.rotationQuaternion = BABYLON.Quaternion.Identity();
+  camera.minZ = 0.01;
+  new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+  const cube = BABYLON.MeshBuilder.CreateBox("cube", { size: 0.2 }, scene);
+  cube.material = Object.assign(new BABYLON.StandardMaterial("m", scene), { diffuseColor: BABYLON.Color3.FromHexString("#0a84ff") });
+  cube.setEnabled(false);
+  let tap = null;
+  canvas.onpointerdown = (e) => (tap = [e.clientX / innerWidth, e.clientY / innerHeight]);
+
+  document.getElementById("start").onclick = async (e) => {
+    e.target.hidden = true;
+    const session = await start({ mount: document.getElementById("app") }).catch((err) => (status.textContent = err));
+    // Pull model: Babylon renders in its own loop and reads the latest frame.
+    engine.runRenderLoop(() => {
+      const f = session.frame;
+      if (!f) return;
+      engine.resize();
+      const aspect = engine.getAspectRatio(camera);
+      if (!updateCamera(camera, f, aspect)) return;
+      const place = tap ?? (!cube.isEnabled() && f.state === "normal" ? [0.5, 0.5] : null);
+      const hit = place && f.hitTest(place[0], place[1], aspect)[0]?.position;
+      if (hit) (cube.position.set(hit[0], hit[1] + 0.1, hit[2]), cube.setEnabled(true));
+      tap = null;
+      status.textContent = `${session.backend} · ${f.state} · map ${f.mapSize}`;
+      scene.render();
+    });
+  };
+</script>

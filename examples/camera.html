@@ -8,173 +8,108 @@
   #hud { position: fixed; top: 0; left: 0; margin: 0; padding: 6px 8px; background: #000a; white-space: pre; }
   #start { position: fixed; inset: 0; margin: auto; width: 14em; height: 3em; font: inherit; font-size: 16px; }
 </style>
-<video id="video" playsinline muted hidden></video>
 <canvas id="view"></canvas>
-<canvas id="gl" width="1" height="1" hidden></canvas>
 <pre id="hud">loading…</pre>
 <button id="start" hidden>Start camera</button>
 <script type="module">
-  import init, { Tracker } from "../pkg/opsis.js";
+  import { load, start } from "../packages/opsis/dist/index.js";
   const $ = (id) => document.getElementById(id);
-  const hud = $("hud"), video = $("video"), view = $("view");
+  const hud = $("hud"), view = $("view");
   const params = new URLSearchParams(location.search);
-  const MAX_SIDE = 640; // processing size; level 0 of the pyramid
-  const FOV = Number(params.get("fov") ?? 69); // degrees across the long side; tune until the grid holds when turning
+  const FOV = Number(params.get("fov") ?? 69); // tune until the grid holds when turning
   const DELAY = Number(params.get("delay") ?? 0); // ms the sensor leads the camera; tune until the grid holds when turning fast
   const RECORD = params.get("record") === "1"; // ?record=1: upload luma + sensor angles (server needs OPSIS_RECORD=1)
   const REC_FRAMES = Number(params.get("frames") ?? 300); // ?frames=N: recording length (5 s at 60 fps by default; ~0.2 MB per frame)
   const LEVELS = Number(params.get("levels") ?? 0); // ?levels=n: diagnostic, pyramid levels (default 4)
   const VISION = params.get("vision") !== "0"; // ?vision=0: sensor rotation only, to tune fov and delay over a fixed grid
+  const BACKEND = params.get("backend") ?? "auto";
   const COLORS = ["#ff3b30", "#ffcc00", "#34c759", "#0a84ff"];
-  const STATES = ["initializing: tilt down at the floor", "normal", "limited", "lost"];
+  const HINT = { initializing: "initializing: tilt down at the floor" };
 
-  await init();
-  const webgpu = params.get("backend") !== "webgl" && !!navigator.gpu && !!(await navigator.gpu.requestAdapter());
-  hud.textContent = `ready (${webgpu ? "webgpu" : "webgl2"}). Params: ?backend=webgl ?fov=${FOV} ?delay=${DELAY} ?vision=${+VISION}`;
+  await load();
+  hud.textContent = `ready. Params: ?backend=webgl ?fov=${FOV} ?delay=${DELAY} ?vision=${+VISION}`;
   $("start").hidden = false;
 
-  // Timestamped sensor samples; the frame picks the one nearest its capture time (no angle interpolation:
-  // Euler angles are singular in upright portrait).
-  const samples = [];
-  addEventListener("deviceorientation", (e) => {
-    if (e.alpha === null) return;
-    samples.push({ t: performance.now(), a: e.alpha, b: e.beta, g: e.gamma }); // stamped on receipt: one clock with the frames
-    if (samples.length > 60) samples.shift();
-  });
-  // Gravity-free acceleration (m/s^2, device axes) for metric scale; same nearest-sample pick as orientation.
-  const motion = [];
-  addEventListener("devicemotion", (e) => {
-    const a = e.acceleration;
-    if (a?.x == null) return;
-    motion.push({ t: performance.now(), x: a.x, y: a.y, z: a.z });
-    if (motion.length > 120) motion.shift();
-  });
-  const motionAt = (t) => motion.reduce((best, s) => (!best || Math.abs(s.t - t) < Math.abs(best.t - t) ? s : best), null);
-  const sensorAt = (t) => samples.reduce((best, s) => (!best || Math.abs(s.t - t) < Math.abs(best.t - t) ? s : best), null);
-
   $("start").onclick = async () => {
-    // iOS: must be the first call in the gesture, before any await.
-    const perm = window.DeviceOrientationEvent?.requestPermission?.() ?? Promise.resolve("granted");
-    window.DeviceMotionEvent?.requestPermission?.().catch(() => {}); // iOS: same gesture; scale stays unknown if denied
     $("start").hidden = true;
     try {
-      const sensorOk = (await perm) === "granted";
-      video.srcObject = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } }, audio: false,
-      });
-      await video.play();
-      const tracker = await Tracker.create($("gl"), webgpu, FOV);
-      if (LEVELS) tracker.set_levels(LEVELS);
-      const k = MAX_SIDE / Math.max(video.videoWidth, video.videoHeight);
-      const w = Math.round(video.videoWidth * k), h = Math.round(video.videoHeight * k);
-      view.width = w; view.height = h;
+      const session = await start({ fov: FOV, sensorDelay: DELAY, vision: VISION, levels: LEVELS, backend: BACKEND });
       const ctx = view.getContext("2d");
-      ctx.lineWidth = 2;
-      // Pixels come from a hidden canvas so the visible one only ever shows a frame with its overlay
-      // (the browser presents during the await, which would show the frame before it is drawn).
-      // No willReadFrequently: that keeps the canvas on the CPU; the GPU copies it straight into a texture.
-      // Two frames in flight: the next one is copied and submitted while this one waits on the GPU, so the
-      // frame time is max(CPU, GPU), not their sum. One canvas each: a frame shows the pixels it tracked.
-      const works = [0, 1].map(() => new OffscreenCanvas(w, h).getContext("2d"));
-      let inFlight = 0, slot = 0;
-      let emaMs = 0, emaFps = 0, emaSplit = [], last = performance.now(), anchor = null, tracked = 0; // tracked: time of the last Normal/Limited frame
-
-      const project = (p, X) => {
-        const d = [X[0] - p[3], X[1] - p[4], X[2] - p[5]];
-        const c = [0, 1, 2].map((j) => p[6 + j] * d[0] + p[9 + j] * d[1] + p[12 + j] * d[2]);
-        return c[2] > 0.05 ? [p[15] * c[0] / c[2] + p[16], p[15] * c[1] / c[2] + p[17]] : null;
-      };
-      const line = (p, A, B, n = 1) => {
-        for (let i = 0; i < n; i++) {
-          const lerp = (t) => A.map((a, j) => a + (B[j] - a) * t);
-          const u = project(p, lerp(i / n)), v = project(p, lerp((i + 1) / n));
-          if (u && v) { ctx.moveTo(...u); ctx.lineTo(...v); }
-        }
-      };
-
-      let driver = "rAF", gotVfc = false, sent = 0, acked = 0, failed = 0;
+      const ema = {}, smooth = (k, v) => (ema[k] = ema[k] === undefined ? v : 0.9 * ema[k] + 0.1 * v);
+      let last = performance.now(), anchor = null, tracked = 0, sent = 0, acked = 0, failed = 0;
       const recSession = Date.now();
-      const frame = async (now, meta) => {
-        if (meta) { gotVfc = true; driver = "video frames"; }
-        next();
-        if (inFlight >= 2) return;
-        inFlight++;
-        const work = works[slot++ & 1];
-        try {
-        const tc = performance.now();
-        work.drawImage(video, 0, 0, w, h);
-        const tFrame = meta?.captureTime ?? meta?.expectedDisplayTime ?? now;
-        const want = tFrame - DELAY;
-        const s = sensorOk ? sensorAt(want) : null;
-        const m = motionAt(want);
-        const t0 = performance.now(); // before the recording readback so `copy` stays the drawImage alone
+
+      session.onFrame((f) => {
+        const { width: w, height: h } = f.image;
+        if (view.width !== w) (view.width = w), (view.height = h);
+        const s = f.sensor, m = f.motion;
         if (RECORD && s && sent < REC_FRAMES) {
           // Same integer luma as the GPU pass, so the replay sees exactly what the tracker saw.
-          const rgba = work.getImageData(0, 0, w, h).data; // recording only: the tracker reads the canvas on the GPU
+          const rgba = f.image.getContext("2d").getImageData(0, 0, w, h).data;
           const luma = new Uint8Array(w * h);
           for (let i = 0; i < luma.length; i++) luma[i] = (77 * rgba[4 * i] + 150 * rgba[4 * i + 1] + 29 * rgba[4 * i + 2]) >> 8;
           // Capture index + time travel with the frame: uploads can land out of order. Count acks, not sends.
-          fetch(`/rec?s=${recSession}&i=${sent++}&t=${tFrame}&w=${w}&h=${h}&a=${s.a}&b=${s.b}&g=${s.g}&fov=${FOV}${m ? `&ax=${m.x}&ay=${m.y}&az=${m.z}` : ""}`, { method: "POST", body: luma })
+          fetch(`/rec?s=${recSession}&i=${sent++}&t=${f.time}&w=${w}&h=${h}&a=${s.alpha}&b=${s.beta}&g=${s.gamma}&fov=${FOV}${m ? `&ax=${m.x}&ay=${m.y}&az=${m.z}` : ""}`, { method: "POST", body: luma })
             .then((r) => (r.ok ? acked++ : failed++), () => failed++);
         }
-        const kps = await tracker.detect(work.canvas, s ? s.a : NaN, s ? s.b : NaN, s ? s.g : NaN, screen.orientation?.angle ?? 0, tFrame, m ? m.x : NaN, m ? m.y : NaN, m ? m.z : NaN, VISION);
-        const ms = performance.now() - t0;
-        // [canvas copy, GPU encode, GPU wait + readback, track]: the copy is outside `detect`.
-        emaSplit = [t0 - tc, ...tracker.split_ms()].map((v, i) => emaSplit[i] ? 0.9 * emaSplit[i] + 0.1 * v : v);
-        const p = tracker.pose();
 
-        ctx.drawImage(work.canvas, 0, 0);
-        for (let i = 0; i < kps.length; i += 4) {
-          ctx.strokeStyle = COLORS[kps[i + 2]];
+        ctx.drawImage(f.image, 0, 0);
+        ctx.lineWidth = 2;
+        const k = f.keypoints;
+        for (let i = 0; i < k.length; i += 4) {
+          ctx.strokeStyle = COLORS[k[i + 2]];
           ctx.beginPath();
-          ctx.arc(kps[i], kps[i + 1], 3 * 1.44 ** kps[i + 2], 0, 2 * Math.PI);
+          ctx.arc(k[i], k[i + 1], 3 * 1.44 ** k[i + 2], 0, 2 * Math.PI);
           ctx.stroke();
         }
-        if (p.length) {
-          // Floor grid (z = 0) around the start point: checks sensor rotation, FOV and delay.
+        if (f.pose) {
+          const P = f.projectionMatrix(w / h), V = f.pose.viewMatrix;
+          const mul = (M, [x, y, z]) => [0, 1, 2, 3].map((i) => M[i] * x + M[4 + i] * y + M[8 + i] * z + M[12 + i]);
+          const project = (X) => {
+            const [x, y, , cw] = mul(P, mul(V, X));
+            return cw > 0.05 ? [(x / cw + 1) * w / 2, (1 - y / cw) * h / 2] : null;
+          };
+          const line = (A, B, n = 1) => {
+            for (let i = 0; i < n; i++) {
+              const lerp = (t) => A.map((a, j) => a + (B[j] - a) * t);
+              const u = project(lerp(i / n)), v = project(lerp((i + 1) / n));
+              if (u && v) (ctx.moveTo(...u), ctx.lineTo(...v));
+            }
+          };
+          // Floor grid around the start point: checks sensor rotation, FOV and delay.
           ctx.strokeStyle = "#fff8";
           ctx.beginPath();
-          for (let g = -3; g <= 3; g += 0.5) { line(p, [g, -3, 0], [g, 3, 0], 24); line(p, [-3, g, 0], [3, g, 0], 24); }
+          for (let g = -3; g <= 3; g += 0.5) (line([g, 0, -3], [g, 0, 3], 24), line([-3, 0, g], [3, 0, g], 24));
           ctx.stroke();
-          if (p[0] === 1 && !anchor) {
-            const R = p.slice(6, 15), dz = R[8];
-            if (dz < -0.2) { const t = -p[5] / dz; anchor = [p[3] + R[2] * t, p[4] + R[5] * t]; }
-          }
+          if (f.state === "normal" && !anchor) anchor = f.hitTest(0.5, 0.5, w / h)[0]?.position ?? null;
           const now = performance.now();
-          if (p[0] === 1 || p[0] === 2) tracked = now;
+          if (f.state === "normal" || f.state === "limited") tracked = now;
           // Lost under 1 s (a pan, a quick cover): keep showing it, turning with the gyro from the last position.
-          if (anchor && p[0] !== 0 && now - tracked < 1000) {
-            const [ax, ay] = anchor, e = 0.15;
-            const v = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => [ax + (i & 1 ? e : -e), ay + (i & 2 ? e : -e), i & 4 ? 2 * e : 0]);
-            ctx.strokeStyle = p[0] === 1 ? "#0f0" : "#fa0";
+          if (anchor && f.state !== "initializing" && now - tracked < 1000) {
+            const e = 0.15, v = [...Array(8)].map((_, i) => [anchor[0] + (i & 1 ? e : -e), i & 4 ? 2 * e : 0, anchor[2] + (i & 2 ? e : -e)]);
+            ctx.strokeStyle = f.state === "normal" ? "#0f0" : "#fa0";
             ctx.beginPath();
-            for (const [a, b] of [[0,1],[1,3],[3,2],[2,0],[4,5],[5,7],[7,6],[6,4],[0,4],[1,5],[2,6],[3,7]]) line(p, v[a], v[b]);
+            for (const [a, b] of [[0, 1], [1, 3], [3, 2], [2, 0], [4, 5], [5, 7], [7, 6], [6, 4], [0, 4], [1, 5], [2, 6], [3, 7]]) line(v[a], v[b]);
             ctx.stroke();
           }
         }
-        const t = performance.now();
-        emaMs = emaMs ? 0.9 * emaMs + 0.1 * ms : ms;
-        emaFps = emaFps ? 0.9 * emaFps + 0.1 * (1000 / (t - last)) : 1000 / (t - last);
+
+        const t = performance.now(), st = f.stats;
+        smooth("detect", st.detect);
+        smooth("fps", 1000 / (t - last));
         last = t;
-        hud.textContent = `${tracker.backend()} ${w}x${h} fov ${FOV} delay ${DELAY} ${VISION ? "" : "SENSOR ONLY"}${RECORD ? ` REC ${acked}/${REC_FRAMES}${failed ? ` FAILED ${failed}` : ""}` : ""}\n`
-          + `driver ${driver}  sensor age ${s ? (want - s.t).toFixed(0) : "-"} ms\n`
-          + `keypoints ${kps.length / 4} (t ${tracker.threshold()})  detect ${emaMs.toFixed(1)} ms  fps ${emaFps.toFixed(1)}\n`
-          + `copy ${emaSplit[0].toFixed(1)}  gpu enc ${emaSplit[1].toFixed(1)} wait ${emaSplit[2].toFixed(1)}  track ${emaSplit[3].toFixed(1)} ms\n`
-          + (emaSplit.length > 4 ? `wait: gpu ${emaSplit[4].toFixed(1)} map ${emaSplit[5].toFixed(1)} unpack ${emaSplit[6].toFixed(1)}${LEVELS ? `  levels ${LEVELS}` : ""}\n` : "")
-          + (!sensorOk ? "no orientation sensor: tracking off"
-            : p.length ? `${STATES[p[0]]}  inliers ${p[1]}  map ${p[2]}\npos ${Array.from(p.slice(3, 6), (x) => x.toFixed(2)).join(" ")}  scale ${Number.isNaN(p[18]) ? (m ? "-" : "no motion sensor") : `${p[18].toFixed(2)} m/unit`}`
+        const split = [st.copy, ...st.split].map((v, i) => smooth(i, v).toFixed(1));
+        const pos = f.pose ? f.pose.position.map((x) => x.toFixed(2)).join(" ") : "";
+        hud.textContent = `${session.backend} ${w}x${h} fov ${FOV} delay ${DELAY} ${VISION ? "" : "SENSOR ONLY"}${RECORD ? ` REC ${acked}/${REC_FRAMES}${failed ? ` FAILED ${failed}` : ""}` : ""}\n`
+          + `sensor age ${s ? (f.time - DELAY - s.t).toFixed(0) : "-"} ms\n`
+          + `keypoints ${k.length / 4} (t ${st.threshold})  detect ${ema.detect.toFixed(1)} ms  fps ${ema.fps.toFixed(1)}\n`
+          + `copy ${split[0]}  gpu enc ${split[1]} wait ${split[2]}  track ${split[3]} ms\n`
+          + (split.length > 4 ? `wait: gpu ${split[4]} map ${split[5]} unpack ${split[6]}${LEVELS ? `  levels ${LEVELS}` : ""}\n` : "")
+          + (!s ? "no orientation sensor: tracking off"
+            : f.pose ? `${HINT[f.state] ?? f.state}  inliers ${f.inliers}  map ${f.mapSize}\npos ${pos}  scale ${f.scale ? `${f.scale.toFixed(2)} m/unit` : m ? "-" : "no motion sensor"}`
             : "waiting for sensor…");
-        } catch (e) {
-          hud.textContent = `frame error: ${e}`;
-        } finally {
-          inFlight--;
-        }
-      };
-      // One callback per new camera frame; falls back to rAF if the browser never fires it (hidden video).
-      let vfcGaveUp = false;
-      setTimeout(() => { vfcGaveUp = !gotVfc; if (vfcGaveUp) requestAnimationFrame(frame); }, 500);
-      const next = () => (video.requestVideoFrameCallback && !vfcGaveUp ? video.requestVideoFrameCallback(frame) : requestAnimationFrame(frame));
-      next();
+      });
+      session.onError((e) => (hud.textContent = `frame error: ${e}`));
     } catch (e) {
       hud.textContent = `error: ${e}`;
     }
