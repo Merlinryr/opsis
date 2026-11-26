@@ -4,6 +4,7 @@
 //! WEBAR_REPLAY_FOV overrides the recorded field of view (to compare FOV guesses offline).
 //! WEBAR_REPLAY_END keeps only the first N frames (to cut a bad tail).
 //! WEBAR_REPLAY_OCCLUDE=a..b blacks out forward frames a..b-1 (M01 V3: lost, then recovery on uncover).
+//! WEBAR_REPLAY_SEED=n sets the RANSAC seed (judge a change over several: `scripts/replay-seeds.ps1`).
 //! WEBAR_REPLAY_MAX_ERR=m fails the test if the closure gap or the forward z spread (max - min, true height
 //! is constant on a walk) exceeds m units (M01 V1 pass/fail).
 //! The frames play forward then backward, and the pose at the first tracked frame is compared on both
@@ -56,6 +57,11 @@ fn replay() {
     let mut slam: Option<Slam> = None;
     let (mut start, mut back, mut last, mut path, mut zr) = (None, None, None, 0.0f32, (f32::MAX, f32::MIN));
     let (mut states, mut ms_sum, mut ms_max) = ([0usize; 4], 0.0f64, 0.0f64);
+    // Forward pose per frame, and |forward - backward| where both passes tracked it as Normal: a consistency
+    // check, not accuracy (the way back re-tracks the forward map), but a wrong pose shows as a large gap.
+    let mut fwd: Vec<Option<[f32; 3]>> = vec![None; rows.iter().map(|r| r[0] as usize + 1).max().unwrap_or(0)];
+    let mut gaps: Vec<f32> = Vec::new();
+    let seed = std::env::var("WEBAR_REPLAY_SEED").ok().map(|v| v.parse::<u32>().expect("WEBAR_REPLAY_SEED"));
     println!("frame dir state inl/match  map thr  kps  track_ms   x     y     z");
     let order: Vec<(&Vec<f32>, char)> = rows.iter().map(|r| (r, '>')).chain(rows.iter().rev().skip(1).map(|r| (r, '<'))).collect();
     for &(r, dir_mark) in &order {
@@ -66,7 +72,13 @@ fn replay() {
         }
         let levels = pyramid(Gray { w, h, data }, cfg.levels, cfg.scale);
         let rb = readback::cpu_levels(&levels, &cfg, BORDER);
-        let s = slam.get_or_insert_with(|| Slam::new(Intrinsics::from_fov(w, h, fov.unwrap_or(r[6]))));
+        let s = slam.get_or_insert_with(|| {
+            let mut s = Slam::new(Intrinsics::from_fov(w, h, fov.unwrap_or(r[6])));
+            if let Some(seed) = seed {
+                s.seed(seed);
+            }
+            s
+        });
         let threshold = cfg.fast_threshold;
         let t0 = Instant::now();
         // Optional columns: capture time (ms), then gravity-free device acceleration (recordings since IMU capture).
@@ -81,6 +93,12 @@ fn replay() {
             reseeded = s.reseeds > 0;
             if n >= o.end && (s.state == State::Normal || s.state == State::Limited) {
                 recovered = Some((n - o.end, s.c));
+            }
+        }
+        if s.state == State::Normal {
+            match dir_mark {
+                '>' => fwd[n] = Some(s.c),
+                _ => gaps.extend(fwd[n].map(|f| (0..3).map(|i| (f[i] - s.c[i]).powi(2)).sum::<f32>().sqrt())),
             }
         }
         if s.state == State::Normal || s.state == State::Limited {
@@ -104,8 +122,8 @@ fn replay() {
     println!("\nframes {} | init {} normal {} limited {} lost {}", order.len(), states[0], states[1], states[2], states[3]);
     if let Some(s) = &slam { println!("re-seeds {} | stash merges {} | scale {:?} m/unit, imu lag {:?} ms", s.reseeds, s.merges, s.metres_per_unit, s.imu_lag_ms); }
     println!("track (front-end CPU half + SLAM) mean {:.2} ms, max {ms_max:.2} ms", ms_sum / order.len() as f64);
-    let o = slam.as_ref().map_or([0; 5], |s| s.old);
-    println!("old points in view (>= 50 frames): {} | no keypoint {} | too far {} | ambiguous {} | outlier {} | inlier {}", o.iter().sum::<u32>(), o[0], o[1], o[2], o[3], o[4]);
+    let o = slam.as_ref().map_or([0; 6], |s| s.old);
+    println!("old points in view (>= 50 frames): {} | no keypoint {} | too far {} (corner within 3 px {}) | ambiguous {} | outlier {} | inlier {}", o[..5].iter().sum::<u32>(), o[0], o[1], o[5], o[2], o[3], o[4]);
     if let Some(o) = &occlude {
         match recovered {
             Some((k, c)) => println!(
@@ -121,6 +139,11 @@ fn replay() {
         }
     }
     println!("forward path {path:.2} | closure gap {gap:.3} ({:.1}% of path) | forward z {:.2}..{:.2}", 100.0 * gap / path.max(1e-6), zr.0, zr.1);
+    gaps.sort_by(f32::total_cmp);
+    let q = |p: f32| gaps.get(((gaps.len() as f32 * p) as usize).min(gaps.len().saturating_sub(1))).copied().unwrap_or(f32::NAN);
+    println!("fwd/back gap on {} frames Normal both ways: median {:.3} p95 {:.3} max {:.3}", gaps.len(), q(0.5), q(0.95), q(1.0));
+    // One line per run for scripts/replay-seeds.ps1.
+    println!("SUMMARY lost {} limited {} closure {gap:.3} zspread {:.3} gapmed {:.3} gap95 {:.3} gapmax {:.3} ms {:.2} msmax {ms_max:.2}", states[3], states[2], zr.1 - zr.0, q(0.5), q(0.95), q(1.0), ms_sum / order.len() as f64);
     if let Some(m) = env("WEBAR_REPLAY_MAX_ERR") {
         assert!(gap <= m && zr.1 - zr.0 <= m, "pose error over {m}: closure {gap:.3}, z spread {:.3}", zr.1 - zr.0);
     }

@@ -26,6 +26,18 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Replay yardstick, then two measured changes.
+  - Tooling:
+    - `WEBAR_REPLAY_SEED`, plus `scripts/replay-seeds.ps1`: 5 seeds × every recording, median [min..max]. A change counts only if a median clears the other run's range.
+    - Forward-vs-backward pose gap per frame on frames Normal both ways (median, p95, max): consistency, which catches wrong poses.
+    - "Too far" split by whether a keypoint lies within 3 px of the projection.
+  - Finding: under 1% of "too far" outcomes have a keypoint at the spot. The corner was not re-detected there, so the descriptor is not the problem.
+  - Frame-count thresholds (`REINIT_AFTER_LOST`, `KF_COOLDOWN`, miss counting) scale with the measured frame rate, so they keep their duration at 60 fps. 30 fps replays are identical under the same seed.
+  - `MAX_MAP` 1500 → 3000: 1500 filled by frame 60 on the new 1.8 m walk `12-43-04`, which evicted the start area and drifted 0.5 on the way back.
+    - Closure medians fell 0.004–0.041 → 0.003–0.009, most outside the old range. Lost on `10-51-41` fell 102 [87..110] → 73 [64..89]. Others unchanged.
+    - Track max +0–40% (`12-43-04` 5.0 → 6.9 ms).
+  - Rejected: `max_keypoints` 1000 (lost −10–25% on two takes, but wrong poses: gap max 0.13 → 1.2 on `10-44-12`, closure median 0.58 on `12-43-04`, track +50%). FAST minimum 5/4: no consistent change, more cost.
+  - Still open: `12-43-04` height wanders 0.35 on every seed (0.93 → 1.20 forward), and 1 seed of 5 diverges (closure 0.47).
 - 2026-11-26: Metric scale against the owner's phone height (~1.4 m):
   - Low-pass 0.1 s → 0.4 s twice. Correlation on walks rose 0.43–0.57 → 0.9.
   - Estimator aa/va → va/vv, with gate r > 0.8.

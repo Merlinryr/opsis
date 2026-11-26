@@ -77,7 +77,9 @@ struct Keyframe {
 #[derive(Clone, Copy, PartialEq)]
 enum Guided {
     NoKeypoint,
-    TooFar,
+    /// Best descriptor over `MATCH_DIST`; true if that keypoint is within 3 px of the projection (the corner
+    /// was re-detected, its descriptor changed), false if not (the corner was not re-detected there).
+    TooFar(bool),
     Ambiguous,
     Match(usize),
 }
@@ -87,7 +89,7 @@ const CAMERA_HEIGHT: f32 = 1.0;
 const MIN_BELOW_HORIZON: f32 = 0.26; // sin(15 deg): depth error explodes near the horizon
 const MAX_DEPTH: f32 = 4.0 * CAMERA_HEIGHT;
 const MIN_INIT_POINTS: usize = 100; // 40 started on blurry frames with a map too thin to track (phone replay)
-const MAX_MAP: usize = 1500;
+const MAX_MAP: usize = 3000; // 1500 filled by frame 60 on a 1.8 m walk and evicted the start area: drift on the way back (12-43-04). 3000: closure medians 0.004-0.041 -> 0.003-0.009 over 5 seeds x 9 replays, lost 102 -> 73 on 10-51-41, track max +0-40%
 const MAX_ADD: usize = 50;
 const MATCH_DIST: u32 = 64;
 const INLIER_PX: f32 = 4.0;
@@ -104,6 +106,8 @@ const MAX_RELOC_DZ: f32 = 0.5 * CAMERA_HEIGHT;
 const OLD: u32 = 50; // frames: a point this old counts in `Slam::old`
 const MAX_TURN_RATE: f32 = 1.22; // rad/s (70 deg/s, 8th Wall `maxGyroMagnitude`): no map upkeep above
 const FRAME_S: f32 = 1.0 / 30.0; // frame interval assumed when no capture time is given (unit tests, old recordings)
+// Frame-count thresholds (`REINIT_AFTER_LOST`, `KF_COOLDOWN`, `MAX_MISSES`) are tuned at 30 fps: they scale with
+// `Slam::rate` (1 at 30 fps, 2 at 60) so they keep their duration, and 30 fps runs stay identical.
 const SCALE_WINDOW_S: f32 = 5.0; // seconds of tracked motion per metric-scale estimate (150 frames at 30 fps, 300 at 60)
 const MAX_LAG_S: f32 = 0.1; // camera-IMU offset searched within +-0.1 s (8th Wall 0.5 s): the phone walks fit at 0-33 ms, and a 167 ms fit read 0.90 for ~1.4
 const SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.3..=3.0; // metres per unit: the unit is the camera height
@@ -132,7 +136,8 @@ pub struct Slam {
     pub matches: usize,
     /// Replay metric, cumulative: guided outcomes of in-view points older than `OLD` frames
     /// (no keypoint near, best over `MATCH_DIST`, ratio-rejected, RANSAC outlier, inlier).
-    pub old: [u32; 5],
+    /// [5]: the too-far ones with a keypoint within 3 px (descriptor changed), a subset of [1].
+    pub old: [u32; 6],
     lost_frames: u32,
     frame: u32,
     rng: u32,
@@ -145,6 +150,8 @@ pub struct Slam {
     next_id: u32,
     /// Capture time (ms) of the last frame, NaN if unknown.
     last_t: f64,
+    /// Smoothed frame interval (s): sets `rate`.
+    frame_dt: f32,
     /// Tracked frames since the last gap: (camera centre, world acceleration m/s^2, time s), for metric scale.
     motion: Vec<(V3, V3, f32)>,
     /// Metres per map unit and camera-to-IMU offset (ms), once the estimator has converged. Reported only:
@@ -165,7 +172,17 @@ type Pair = (V3, V3);
 impl Slam {
     pub fn new(k: Intrinsics) -> Self {
         let r = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, matches: 0, old: [0; 5], lost_frames: 0, frame: 0, rng: 0x2545_F491, v: [0.0; 3], last_sensor: r, keyframes: Vec::new(), last_kf: 0, next_id: 0, last_t: f64::NAN, motion: Vec::new(), metres_per_unit: None, imu_lag_ms: None, stash: Vec::new(), reseeds: 0, merges: 0 }
+        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, matches: 0, old: [0; 6], lost_frames: 0, frame: 0, rng: 0x2545_F491, v: [0.0; 3], last_sensor: r, keyframes: Vec::new(), last_kf: 0, next_id: 0, last_t: f64::NAN, frame_dt: FRAME_S, motion: Vec::new(), metres_per_unit: None, imu_lag_ms: None, stash: Vec::new(), reseeds: 0, merges: 0 }
+    }
+
+    /// Frames per 30 fps frame (1 at 30 fps, 2 at 60): frame-count thresholds are multiplied by it.
+    fn rate(&self) -> u32 {
+        (FRAME_S / self.frame_dt).round().max(1.0) as u32
+    }
+
+    /// RANSAC seed (replay: compare changes over several seeds, as the seed alone moves the results).
+    pub fn seed(&mut self, s: u32) {
+        self.rng = s.max(1); // xorshift stays at 0
     }
 
     pub fn keyframes(&self) -> usize {
@@ -214,6 +231,7 @@ impl Slam {
     pub fn update(&mut self, kps: &[Keypoint], desc: &[Descriptor], sensor: &M3, t: f64, accel: Option<V3>) {
         let dt = ((t - self.last_t).abs() as f32 * 1e-3).clamp(0.005, 0.2); // abs: replays also run backward
         let dt = if dt.is_nan() { FRAME_S } else { dt };
+        self.frame_dt = 0.9 * self.frame_dt + 0.1 * dt;
         self.last_t = t;
         // Turn since last frame (rotation angle of last^T * now): blurred fast pans must not edit the map.
         let tr: f32 = (0..3).map(|i| dot([self.last_sensor[0][i], self.last_sensor[1][i], self.last_sensor[2][i]], [sensor[0][i], sensor[1][i], sensor[2][i]])).sum();
@@ -235,7 +253,10 @@ impl Slam {
         for &(mi, g) in guided.iter().filter(|&&(mi, _)| self.frame - self.map[mi].born >= OLD) {
             let b = match g {
                 Guided::NoKeypoint => 0,
-                Guided::TooFar => 1,
+                Guided::TooFar(near) => {
+                    self.old[5] += near as u32;
+                    1
+                }
                 Guided::Ambiguous => 2,
                 Guided::Match(_) => 3 + is_inlier[mi] as usize,
             };
@@ -269,7 +290,7 @@ impl Slam {
             // to it merges back (a plain re-seed moved the origin ~1 m, covered-lens replay 2026-11-26). Only
             // on frames that can seed: a covered lens just stays Lost. shortcut: one stash, always the oldest
             // map (placed content lives in its frame); a second re-seed drops the current map.
-            if self.lost_frames >= REINIT_AFTER_LOST {
+            if self.lost_frames >= REINIT_AFTER_LOST * self.rate() {
                 let old = std::mem::take(&mut self.map);
                 self.initialize(kps, desc);
                 if self.state != State::Normal {
@@ -333,13 +354,15 @@ impl Slam {
         }
         let near_corner = |x: usize, y: usize| (y.saturating_sub(1)..(y + 2).min(gh)).any(|j| (x.saturating_sub(1)..(x + 2).min(gw)).any(|i| detected[j * gw + i]));
         let mut occupied = vec![false; gw * gh];
+        let tick = self.frame % self.rate() == 0;
         for (mp, &ok) in self.map.iter_mut().zip(&is_inlier) {
             let Some((x, y)) = self.k.project(&r, c, mp.x).and_then(|(u, v)| cell(u, v)) else { continue };
             occupied[y * gw + x] = true;
             if !ok && !near_corner(x, y) {
                 continue;
             }
-            mp.misses = if ok { 0 } else { mp.misses.saturating_add(1) };
+            // Misses count at 30 Hz whatever the frame rate, so a point gets the same time to come back.
+            mp.misses = if ok { 0 } else { mp.misses.saturating_add(tick as u8) };
             if ok {
                 mp.seen = self.frame;
             }
@@ -364,7 +387,7 @@ impl Slam {
                 added += 1;
             }
         }
-        if self.frame - self.last_kf >= KF_COOLDOWN && (added >= KF_NEW_POINTS || self.map.len() < KF_LOW_MAP || self.keyframes.last().is_none_or(|kf| norm(sub(kf.c, c)) > KF_BASELINE)) {
+        if self.frame - self.last_kf >= KF_COOLDOWN * self.rate() && (added >= KF_NEW_POINTS || self.map.len() < KF_LOW_MAP || self.keyframes.last().is_none_or(|kf| norm(sub(kf.c, c)) > KF_BASELINE)) {
             // Keypoints with no map point near them: candidates for epipolar matching with the next keyframes.
             let free = kps.iter().zip(desc).filter(|(k, _)| cell(k.x, k.y).is_some_and(|(x, y)| !occupied[y * gw + x])).map(|(k, d)| (self.k.ray(k.x, k.y), *d, k.level)).collect();
             self.add_keyframe(sensor, new_obs, free);
@@ -739,7 +762,7 @@ impl Slam {
                 let detectable = (b..2.0 * self.k.cx - b).contains(&u) && (b..2.0 * self.k.cy - b).contains(&v);
                 let Some((h, ki)) = candidates().min() else { return detectable.then_some((mi, Guided::NoKeypoint)) };
                 if h > MATCH_DIST {
-                    return Some((mi, Guided::TooFar));
+                    return Some((mi, Guided::TooFar((kps[ki].x - u).powi(2) + (kps[ki].y - v).powi(2) <= 9.0)));
                 }
                 // The runner-up skips the same corner found again (another pyramid level, a pixel or two away).
                 let twin = near(kps[ki].x, kps[ki].y, 3.0);
