@@ -79,7 +79,7 @@ enum Guided {
     NoKeypoint,
     /// Best descriptor over `MATCH_DIST`; true if that keypoint is within 3 px of the projection (the corner
     /// was re-detected, its descriptor changed), false if not (the corner was not re-detected there).
-    TooFar(bool),
+    TooFar(bool, u8),
     Ambiguous,
     Match(usize),
 }
@@ -136,8 +136,10 @@ pub struct Slam {
     pub matches: usize,
     /// Replay metric, cumulative: guided outcomes of in-view points older than `OLD` frames
     /// (no keypoint near, best over `MATCH_DIST`, ratio-rejected, RANSAC outlier, inlier).
-    /// [5]: the too-far ones with a keypoint within 3 px (descriptor changed), a subset of [1].
-    pub old: [u32; 6],
+    /// [5]: the too-far ones whose best candidate is within 3 px; [6] / [7]: with any keypoint (any level)
+    /// within 3 / 6 px; [8]: confirmed (not a floor guess); [9]: confirmed with no keypoint within 6 px.
+    /// Subsets of [1].
+    pub old: [u32; 10],
     lost_frames: u32,
     frame: u32,
     rng: u32,
@@ -174,7 +176,7 @@ type Pair = (V3, V3);
 impl Slam {
     pub fn new(k: Intrinsics) -> Self {
         let r = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, matches: 0, old: [0; 6], lost_frames: 0, frame: 0, rng: 0x2545_F491, v: [0.0; 3], last_sensor: r, keyframes: Vec::new(), last_kf: 0, next_id: 0, last_t: f64::NAN, frame_dt: FRAME_S, motion: Vec::new(), metres_per_unit: None, imu_lag_ms: None, stash: Vec::new(), reseeds: 0, merges: 0, matched_born: Vec::new() }
+        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, matches: 0, old: [0; 10], lost_frames: 0, frame: 0, rng: 0x2545_F491, v: [0.0; 3], last_sensor: r, keyframes: Vec::new(), last_kf: 0, next_id: 0, last_t: f64::NAN, frame_dt: FRAME_S, motion: Vec::new(), metres_per_unit: None, imu_lag_ms: None, stash: Vec::new(), reseeds: 0, merges: 0, matched_born: Vec::new() }
     }
 
     /// Frames per 30 fps frame (1 at 30 fps, 2 at 60): frame-count thresholds are multiplied by it.
@@ -256,8 +258,13 @@ impl Slam {
         for &(mi, g) in guided.iter().filter(|&&(mi, _)| self.frame - self.map[mi].born >= OLD) {
             let b = match g {
                 Guided::NoKeypoint => 0,
-                Guided::TooFar(near) => {
+                Guided::TooFar(near, any) => {
                     self.old[5] += near as u32;
+                    self.old[6] += (any == 3) as u32;
+                    self.old[7] += (any >= 6) as u32;
+                    let confirmed = self.map[mi].seed.is_none();
+                    self.old[8] += confirmed as u32;
+                    self.old[9] += (confirmed && any == 0) as u32;
                     1
                 }
                 Guided::Ambiguous => 2,
@@ -765,7 +772,9 @@ impl Slam {
                 let detectable = (b..2.0 * self.k.cx - b).contains(&u) && (b..2.0 * self.k.cy - b).contains(&v);
                 let Some((h, ki)) = candidates().min() else { return detectable.then_some((mi, Guided::NoKeypoint)) };
                 if h > MATCH_DIST {
-                    return Some((mi, Guided::TooFar((kps[ki].x - u).powi(2) + (kps[ki].y - v).powi(2) <= 9.0)));
+                    let d2 = kps.iter().map(|k| (k.x - u).powi(2) + (k.y - v).powi(2)).fold(f32::MAX, f32::min);
+                    let any = if d2 <= 9.0 { 3 } else if d2 <= 36.0 { 6 } else { 0 };
+                    return Some((mi, Guided::TooFar((kps[ki].x - u).powi(2) + (kps[ki].y - v).powi(2) <= 9.0, any)));
                 }
                 // The runner-up skips the same corner found again (another pyramid level, a pixel or two away).
                 let twin = near(kps[ki].x, kps[ki].y, 3.0);

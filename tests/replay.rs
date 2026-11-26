@@ -132,8 +132,9 @@ fn replay() {
     println!("\nframes {} | init {} normal {} limited {} lost {}", order.len(), states[0], states[1], states[2], states[3]);
     if let Some(s) = &slam { println!("re-seeds {} | stash merges {} | scale {:?} m/unit, imu lag {:?} ms", s.reseeds, s.merges, s.metres_per_unit, s.imu_lag_ms); }
     println!("track (front-end CPU half + SLAM) mean {:.2} ms, max {ms_max:.2} ms", ms_sum / order.len() as f64);
-    let o = slam.as_ref().map_or([0; 6], |s| s.old);
-    println!("old points in view (>= 50 frames): {} | no keypoint {} | too far {} (corner within 3 px {}) | ambiguous {} | outlier {} | inlier {}", o[..5].iter().sum::<u32>(), o[0], o[1], o[5], o[2], o[3], o[4]);
+    let o = slam.as_ref().map_or([0; 10], |s| s.old);
+    println!("too far, confirmed points: {} of which no keypoint within 6 px: {}", o[8], o[9]);
+    println!("old points in view (>= 50 frames): {} | no keypoint {} | too far {} (best within 3 px {}, any keypoint within 3 px {} / 6 px {}) | ambiguous {} | outlier {} | inlier {}", o[..5].iter().sum::<u32>(), o[0], o[1], o[5], o[6], o[6] + o[7], o[2], o[3], o[4]);
     if let Some(o) = &occlude {
         match recovered {
             Some((k, c)) => println!(
