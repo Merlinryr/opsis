@@ -23,8 +23,6 @@
   const DELAY = Number(params.get("delay") ?? 0); // ms the sensor leads the camera; tune until the grid holds when turning fast
   const RECORD = params.get("record") === "1"; // ?record=1: upload luma + sensor angles (server needs WEBAR_RECORD=1)
   const LEVELS = Number(params.get("levels") ?? 0); // ?levels=n: diagnostic, pyramid levels (default 4)
-  const SRC_VIDEO = params.get("src") === "video"; // ?src=video: the tracker copies the video frame itself (no canvas copy)
-  const FPS = Number(params.get("fps") ?? 0); // ?fps=60: ask the camera for that frame rate
   const VISION = params.get("vision") !== "0"; // ?vision=0: sensor rotation only, to tune fov and delay over a fixed grid
   const COLORS = ["#ff3b30", "#ffcc00", "#34c759", "#0a84ff"];
   const STATES = ["initializing: tilt down at the floor", "normal", "limited", "lost"];
@@ -61,7 +59,7 @@
     try {
       const sensorOk = (await perm) === "granted";
       video.srcObject = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 }, ...(FPS ? { frameRate: { ideal: FPS } } : {}) }, audio: false,
+        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false,
       });
       await video.play();
       const tracker = await Tracker.create($("gl"), webgpu, FOV);
@@ -112,10 +110,9 @@
           fetch(`/rec?s=${recSession}&i=${sent++}&t=${tFrame}&w=${w}&h=${h}&a=${s.a}&b=${s.b}&g=${s.g}&fov=${FOV}${m ? `&ax=${m.x}&ay=${m.y}&az=${m.z}` : ""}`, { method: "POST", body: luma })
             .then((r) => (r.ok ? acked++ : failed++), () => failed++);
         }
-        // Same frame callback, before the first await: the canvas still shows the frame the tracker copies.
-        const kps = await tracker.detect(SRC_VIDEO ? video : work.canvas, w, h, s ? s.a : NaN, s ? s.b : NaN, s ? s.g : NaN, screen.orientation?.angle ?? 0, tFrame, m ? m.x : NaN, m ? m.y : NaN, m ? m.z : NaN, VISION);
+        const kps = await tracker.detect(work.canvas, s ? s.a : NaN, s ? s.b : NaN, s ? s.g : NaN, screen.orientation?.angle ?? 0, tFrame, m ? m.x : NaN, m ? m.y : NaN, m ? m.z : NaN, VISION);
         const ms = performance.now() - t0;
-        // [canvas copy, frame upload, GPU encode, GPU wait + readback, track, (WebGPU) submit, gpu, map, unpack].
+        // [canvas copy, GPU encode, GPU wait + readback, track]: the copy is outside `detect`.
         emaSplit = [t0 - tc, ...tracker.split_ms()].map((v, i) => emaSplit[i] ? 0.9 * emaSplit[i] + 0.1 * v : v);
         const p = tracker.pose();
 
@@ -156,9 +153,8 @@
         hud.textContent = `${tracker.backend()} ${w}x${h} fov ${FOV} delay ${DELAY} ${VISION ? "" : "SENSOR ONLY"}${RECORD ? ` REC ${acked}/300${failed ? ` FAILED ${failed}` : ""}` : ""}\n`
           + `driver ${driver}  sensor age ${s ? (want - s.t).toFixed(0) : "-"} ms\n`
           + `keypoints ${kps.length / 4} (t ${tracker.threshold()})  detect ${emaMs.toFixed(1)} ms  fps ${emaFps.toFixed(1)}\n`
-          + `copy ${emaSplit[0].toFixed(1)}  upload ${emaSplit[1].toFixed(1)}  enc ${emaSplit[2].toFixed(1)}  wait ${emaSplit[3].toFixed(1)}  track ${emaSplit[4].toFixed(1)} ms\n`
-          + (emaSplit.length > 5 ? `wait: submit ${emaSplit[5].toFixed(1)} gpu ${emaSplit[6].toFixed(1)} map ${emaSplit[7].toFixed(1)} unpack ${emaSplit[8].toFixed(1)}` : "")
-          + `${SRC_VIDEO ? "  src video" : ""}${LEVELS ? `  levels ${LEVELS}` : ""}${FPS ? `  ask ${FPS} fps` : ""}\n`
+          + `copy ${emaSplit[0].toFixed(1)}  gpu enc ${emaSplit[1].toFixed(1)} wait ${emaSplit[2].toFixed(1)}  track ${emaSplit[3].toFixed(1)} ms\n`
+          + (emaSplit.length > 4 ? `wait: gpu ${emaSplit[4].toFixed(1)} map ${emaSplit[5].toFixed(1)} unpack ${emaSplit[6].toFixed(1)}${LEVELS ? `  levels ${LEVELS}` : ""}\n` : "")
           + (!sensorOk ? "no orientation sensor: tracking off"
             : p.length ? `${STATES[p[0]]}  inliers ${p[1]}  map ${p[2]}\npos ${Array.from(p.slice(3, 6), (x) => x.toFixed(2)).join(" ")}  scale ${Number.isNaN(p[18]) ? (m ? "-" : "no motion sensor") : `${p[18].toFixed(2)} m/unit`}`
             : "waiting for sensor…");

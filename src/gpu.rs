@@ -5,7 +5,7 @@ use crate::FrontEnd;
 use crate::image::{Gray, next_size};
 use crate::readback::Level;
 use wasm_bindgen::JsValue;
-use web_sys::{HtmlVideoElement, OffscreenCanvas};
+use web_sys::OffscreenCanvas;
 
 #[derive(Clone, Copy)]
 pub enum Pass {
@@ -26,8 +26,6 @@ pub trait Gpu {
     fn upload_gray(&self, g: &Gray) -> Result<Self::Tex, JsValue>;
     /// The canvas pixels as RGBA8, copied on the GPU (no getImageData round trip through the CPU).
     fn upload_canvas(&self, c: &OffscreenCanvas) -> Result<Self::Tex, JsValue>;
-    /// The current video frame at its native size, copied on the GPU (no canvas in between).
-    fn upload_video(&self, v: &HtmlVideoElement) -> Result<Self::Tex, JsValue>;
     /// Run one pass into a new `w` x `h` RGBA8 texture.
     fn run(&self, pass: Pass, src: &Self::Tex, src2: Option<&Self::Tex>, w: usize, h: usize) -> Result<Self::Tex, JsValue>;
     /// Tightly packed RGBA8.
@@ -47,17 +45,12 @@ pub trait Gpu {
         self.run(Pass::Blur(0, 1), &tmp, None, w, h)
     }
 
-    /// Full front end on an RGBA frame texture, its luma scaled to `w` x `h` first if the sizes differ, and
-    /// the ms spent encoding the passes (the rest of the call is waiting for the GPU and the readback).
-    async fn front_end(&self, frame: &Self::Tex, cfg: &FrontEnd, border: usize, w: usize, h: usize) -> Result<(Vec<Level>, f64), JsValue> {
+    /// Full front end on an RGBA frame texture, and the ms spent encoding and submitting the passes
+    /// (the rest of the call is waiting for the GPU and the readback).
+    async fn front_end(&self, frame: &Self::Tex, cfg: &FrontEnd, border: usize) -> Result<(Vec<Level>, f64), JsValue> {
         let t0 = js_sys::Date::now();
-        let (fw, fh) = Self::size(frame);
-        let mut level = self.run(Pass::Luma, frame, None, fw, fh)?;
-        if (fw, fh) != (w, h) {
-            // At an integer ratio of 2 this is a 2x2 box average. shortcut: at 3 or more it point-samples
-            // (aliasing); add a box pass if a camera only offers 1080p.
-            level = self.run(Pass::Down(fw as f32 / w as f32), &level, None, w, h)?;
-        }
+        let (w, h) = Self::size(frame);
+        let mut level = self.run(Pass::Luma, frame, None, w, h)?;
         let mut nms = Vec::new();
         for l in 0..cfg.levels {
             let (lw, lh) = Self::size(&level);

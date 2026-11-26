@@ -26,6 +26,8 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Phone, `?src=video` against the canvas path: upload 2.9–3.1 vs ~4.0 ms, but GPU 7.0–7.8 vs 5.0–6.0 ms (the luma pass now runs on 4x the pixels, plus a scale pass). Net ~1 ms worse. The image was also laggy, offset and inverted: the video element copy ignores the camera orientation that `drawImage` applies. Reverted to 8a2e540 (canvas path, gpu/map/unpack HUD).
+  - The ~4 ms upload stays: only a raw `importExternalTexture` pass outside wgpu could remove it, and the same orientation would have to be handled there. Not worth it at 29.9 fps, which the camera's 30 fps caps anyway.
 - 2026-11-26: Diagnostic build for the frame upload.
   - wgpu 30 has no `importExternalTexture` on web (`create_external_texture` is `unimplemented!`), so the first try stays inside wgpu. `?src=video` copies the video element at native size (`copy_external_image_to_texture` / `texImage2D`, both backends), and the existing `Down` pass scales the luma to 360x640 (a 2x2 box at ratio 2).
   - The HUD now times `upload` apart from `wait`, and splits wait into submit / gpu / map / unpack.

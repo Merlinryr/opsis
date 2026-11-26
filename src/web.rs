@@ -108,7 +108,7 @@ async fn parity<G: Gpu>(gl: &G, name: &str) -> Result<String, JsValue> {
     // Full chain: GPU readback -> keypoints -> retain -> descriptors, vs the same chain on CPU.
     // A +-1 downscale may move a few upper-level corners, so allow 1% of the keypoints.
     let gravity = |_: &fast::Keypoint| Some(std::f32::consts::FRAC_PI_2);
-    let (gk, gd) = readback::features(&gl.front_end(&frame, &cfg, BORDER, w, h).await?.0, &cfg, gravity);
+    let (gk, gd) = readback::features(&gl.front_end(&frame, &cfg, BORDER).await?.0, &cfg, gravity);
     let (ck, cd) = readback::features(&readback::cpu_levels(&cpu_levels, &cfg, BORDER), &cfg, gravity);
     let key = |k: &fast::Keypoint| (k.level, (k.x * 64.0).round() as i32, (k.y * 64.0).round() as i32);
     let mut cpu_map: Vec<_> = ck.iter().map(key).zip(&cd).collect();
@@ -143,7 +143,7 @@ pub struct Tracker {
     /// Created on the first frame, once the image size is known.
     slam: RefCell<Option<Slam>>,
     /// Last frame's split of `detect`: [front end incl. readback, track], ms.
-    split_ms: Cell<[f64; 4]>,
+    split_ms: Cell<[f64; 3]>,
 }
 
 #[wasm_bindgen]
@@ -151,11 +151,11 @@ impl Tracker {
     /// WebGPU when `webgpu` is true, else WebGL2 on `canvas`. `fov_deg`: field of view across the long side.
     pub async fn create(canvas: HtmlCanvasElement, webgpu: bool, fov_deg: f32) -> Result<Tracker, JsValue> {
         let backend = if webgpu { Backend::Gpu(Wgpu::new().await?) } else { Backend::Gl(Gl::new(&canvas)?) };
-        Ok(Tracker { backend, cfg: Cell::new(FrontEnd::default()), fov: fov_deg, slam: RefCell::new(None), split_ms: Cell::new([0.0; 4]) })
+        Ok(Tracker { backend, cfg: Cell::new(FrontEnd::default()), fov: fov_deg, slam: RefCell::new(None), split_ms: Cell::new([0.0; 3]) })
     }
 
-    /// [frame upload, GPU encode, GPU wait + readback, track] ms of the last `detect`, then on WebGPU the wait
-    /// split [readback submit, GPU work done, buffers mapped, unpacked].
+    /// [GPU encode + submit, GPU wait + readback, track] ms of the last `detect`, then on WebGPU the wait
+    /// split [GPU work done, buffers mapped, unpacked].
     pub fn split_ms(&self) -> Vec<f64> {
         let mut v = self.split_ms.get().to_vec();
         if let Backend::Gpu(g) = &self.backend {
@@ -189,24 +189,13 @@ impl Tracker {
     /// `ax`, `ay`, `az`: `devicemotion.acceleration` (m/s^2, device axes), NaN when absent. `screen`:
     /// `screen.orientation.angle` (degrees).
     #[allow(clippy::too_many_arguments)]
-    pub async fn detect(&self, frame: JsValue, w: usize, h: usize, alpha: f32, beta: f32, gamma: f32, screen: f32, t: f64, ax: f32, ay: f32, az: f32, vision: bool) -> Result<Vec<f32>, JsValue> {
+    pub async fn detect(&self, frame: OffscreenCanvas, alpha: f32, beta: f32, gamma: f32, screen: f32, t: f64, ax: f32, ay: f32, az: f32, vision: bool) -> Result<Vec<f32>, JsValue> {
+        let (w, h) = (frame.width() as usize, frame.height() as usize);
         let mut cfg = self.cfg.get();
         let t0 = js_sys::Date::now();
-        // `frame`: the video element (straight to the GPU) or the page's canvas.
-        let video = frame.dyn_ref::<web_sys::HtmlVideoElement>();
-        let canvas = || frame.dyn_ref::<OffscreenCanvas>().ok_or("detect: frame is neither a video nor an OffscreenCanvas");
-        let (up, tu): (f64, f64);
-        macro_rules! run {
-            ($g:expr) => {{
-                let tex = match video { Some(v) => $g.upload_video(v)?, None => $g.upload_canvas(canvas()?)? };
-                tu = js_sys::Date::now();
-                up = tu - t0;
-                $g.front_end(&tex, &cfg, BORDER, w, h).await?
-            }};
-        }
         let (levels, encode) = match &self.backend {
-            Backend::Gl(g) => run!(g),
-            Backend::Gpu(g) => run!(g),
+            Backend::Gl(g) => g.front_end(&g.upload_canvas(&frame)?, &cfg, BORDER).await?,
+            Backend::Gpu(g) => g.front_end(&g.upload_canvas(&frame)?, &cfg, BORDER).await?,
         };
         let t1 = js_sys::Date::now();
         let kps = {
@@ -221,7 +210,7 @@ impl Tracker {
             let accel = (!ax.is_nan()).then(|| mulv(&transpose(&camera_in_device(screen)), [ax, ay, az]));
             crate::track(&levels, &mut cfg, slam, &sensor, t, accel, vision)
         };
-        self.split_ms.set([up, encode, t1 - tu - encode, js_sys::Date::now() - t1]);
+        self.split_ms.set([encode, t1 - t0 - encode, js_sys::Date::now() - t1]);
         self.cfg.set(cfg);
         Ok(kps.iter().flat_map(|k| [k.x, k.y, k.level as f32, k.score as f32]).collect())
     }

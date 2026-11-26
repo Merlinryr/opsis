@@ -111,8 +111,8 @@ pub struct Wgpu {
     pool: Pool,
     /// Passes recorded since the last read, submitted together: one submit per pass was ~26 per frame.
     enc: RefCell<Option<wgpu::CommandEncoder>>,
-    /// Last `read_all` wait split, ms: [readback encode + submit, -> GPU work done, -> buffers mapped, -> unpacked].
-    pub wait_ms: std::cell::Cell<[f64; 4]>,
+    /// Last `read_all` wait split, ms: [submit -> GPU work done, -> buffers mapped, -> unpacked].
+    pub wait_ms: std::cell::Cell<[f64; 3]>,
 }
 
 fn err(e: impl std::fmt::Display) -> JsValue {
@@ -173,24 +173,6 @@ impl Wgpu {
         Ok(Self { device, queue, layout, pipes, pool: Pool::default(), enc: RefCell::default(), wait_ms: Default::default() })
     }
 
-    fn upload_external(&self, source: wgpu::ExternalImageSource) -> Result<Tex, JsValue> {
-        let (w, h) = (source.width() as usize, source.height() as usize);
-        let t = self.texture(w, h, wgpu::TextureFormat::Rgba8Unorm, None);
-        self.queue.copy_external_image_to_texture(
-            &wgpu::CopyExternalImageSourceInfo { source, origin: wgpu::Origin2d::ZERO, flip_y: false },
-            wgpu::CopyExternalImageDestInfo {
-                texture: &t.t,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-                color_space: wgpu::PredefinedColorSpace::Srgb,
-                premultiplied_alpha: false,
-            },
-            wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
-        );
-        Ok(t)
-    }
-
     fn texture(&self, w: usize, h: usize, format: wgpu::TextureFormat, data: Option<&[u8]>) -> Tex {
         let size = wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 };
         let reuse = {
@@ -239,11 +221,21 @@ impl Gpu for Wgpu {
     }
 
     fn upload_canvas(&self, c: &OffscreenCanvas) -> Result<Tex, JsValue> {
-        self.upload_external(wgpu::ExternalImageSource::OffscreenCanvas(c.clone()))
-    }
-
-    fn upload_video(&self, v: &web_sys::HtmlVideoElement) -> Result<Tex, JsValue> {
-        self.upload_external(wgpu::ExternalImageSource::HTMLVideoElement(v.clone()))
+        let (w, h) = (c.width() as usize, c.height() as usize);
+        let t = self.texture(w, h, wgpu::TextureFormat::Rgba8Unorm, None);
+        self.queue.copy_external_image_to_texture(
+            &wgpu::CopyExternalImageSourceInfo { source: wgpu::ExternalImageSource::OffscreenCanvas(c.clone()), origin: wgpu::Origin2d::ZERO, flip_y: false },
+            wgpu::CopyExternalImageDestInfo {
+                texture: &t.t,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+                color_space: wgpu::PredefinedColorSpace::Srgb,
+                premultiplied_alpha: false,
+            },
+            wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+        );
+        Ok(t)
     }
 
     fn run(&self, pass: Pass, src: &Tex, src2: Option<&Tex>, w: usize, h: usize) -> Result<Tex, JsValue> {
@@ -303,7 +295,6 @@ impl Gpu for Wgpu {
 
     /// One submit and one wait for all textures: each separate map_async is a full GPU round trip.
     async fn read_all(&self, ts: &[Tex]) -> Result<Vec<Vec<u8>>, JsValue> {
-        let ts0 = js_sys::Date::now();
         let row = |t: &Tex| (t.w * 4).next_multiple_of(256); // WebGPU copy rows must be 256-byte aligned
         let mut enc = self.enc.take().unwrap_or_else(|| self.device.create_command_encoder(&Default::default()));
         let bufs: Vec<_> = ts
@@ -360,7 +351,7 @@ impl Gpu for Wgpu {
                 Ok(v)
             })
             .collect();
-        self.wait_ms.set([t0 - ts0, t1 - t0, t2 - t1, js_sys::Date::now() - t2]);
+        self.wait_ms.set([t1 - t0, t2 - t1, js_sys::Date::now() - t2]);
         out
     }
 }
