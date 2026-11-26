@@ -33,6 +33,10 @@
 - **Quality, not a checkbox:** ~5–10% height (scale) creep per 10 s walk (`zratio` forward × reverse 1.04–1.24); see the log.
 
 ## Log
+- 2026-11-26: Fast-turn tracking hold tried and rejected (5 seeds × 9 takes against the `MAX_MAP` 3000 baseline). Map edits above 70°/s were already gated; this also skipped the pose solve, holding position and following the sensor rotation.
+  - Reported Limited: gap max medians improve (`12-06-23` 0.064 → 0.043, `10-43-54` 0.093 → 0.057, `10-51-41` 0.092 → 0.055) and lost falls (`10-51-41` 73 → 38). But resuming from the held pose let wrong matches through on worst seeds: gap max 2.8 (`10-44-12`), 8.7 (`10-51-41`), and `12-43-04` closure 0.72.
+  - Reported Lost (resume through relocalization): the large worst cases are gone and the gap medians improve. But lost rises (`10-51-41` 73 → 110, `12-06-23` 0 → 24), and `12-43-04` fails on most seeds (closure median 0.60, gap max 0.67).
+  - Rotation-rate gating of the solve needs a better resume than either. The existing map-edit gate stays.
 - 2026-11-26: Active search tried and rejected (5 seeds × 9 takes against the `MAX_MAP` 3000 baseline). Map points that project with no kept keypoint in their 3×3 cells of 8 px pull in the NMS survivors the 500 cap dropped there; those corners match but don't grow the map.
   - Uncapped: lost 11 → 2 (`10-43-54`) and 207 → 191 (`11-55-10`), and `12-43-04` closure median 0.089 → 0.011 with its worst seed 0.47 → 0.06. But track mean +25–115% (`12-43-04` 3.1 → 6.7 ms, max 15), a wrong pose on `10-44-12` (gap max 2.4, one seed), and `10-51-41` closure 0.003 → 0.011.
   - Capped at the 150 strongest: still +20–40% track. The `12-43-04` win is gone (worst seed 0.65), with wrong poses on `10-51-41` (gap max 0.8) and `14-02-35` (closure 0.098).
