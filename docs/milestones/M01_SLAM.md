@@ -26,6 +26,10 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Height path dependence. `WEBAR_REPLAY_REVERSE=1` starts the first pass from the last frame. The SUMMARY `zratio` is end/start z of the first pass, so forward × reverse = 1 for a real height change (5 seeds each).
+  - `12-43-04`: 1.18–1.23 forward × 0.74–1.02 reverse ≈ 0.91–1.22 (median ~1.04). The rise is mostly real: the phone was lifted.
+  - Most other walks drift upward in both directions: products 1.04–1.24 (`14-02-*`, `10-43-54`, `10-44-12`, `10-51-41`, `12-43-29`). `11-55-10` and `12-06-23` read 0.88–0.98. That is a systematic ~5–10% height (scale) creep per 10 s pass, and it is the target.
+  - Tried: unconfirmed floor seeds stop voting when ≥ 30 confirmed points match. Rejected: it fixed the `12-43-04` diverging seed (closures 0.012–0.022), but products got worse on `10-44-12`/`10-51-41` and it made wrong poses (gap max 1.6 and 3.9). Reverted.
 - 2026-11-26: Tried holding scale with the IMU before writing code, and changed nothing. Sliding 3 s IMU scale windows (0.4 s low-pass, va/vv) vary 1.46–1.96 m/unit on `12-06-23`, whose height holds within 0.09 the whole walk. That is ±15–25% noise at the 3 s scale the `12-43-04` drift happens on (1.44 → 0.88 there, but `10-43-54` falls 1.57 → 0.94 with z flat too: late windows correlate less). 5 s windows are calmer but slower than the drift. A correction from this signal would add as much error as it removes.
   - Open options: an anchor that survives new floor (keyframe-based height: re-observe the original floor patch's scale through keyframe chains), or accept per-walk height drift of this size.
 - 2026-11-26: `12-43-04` height drift (z 0.93 → 1.23 forward, correlation 0.77 with pitch) has no anchor.

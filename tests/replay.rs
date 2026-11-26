@@ -26,6 +26,11 @@ fn replay() {
     // capture index was sent are in upload order, which can differ from capture order.
     let mut rows: Vec<Vec<f32>> = meta.lines().map(|l| l.split(',').map(|v| v.parse().unwrap()).collect()).collect();
     rows.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    // WEBAR_REPLAY_REVERSE=1: the first pass runs from the last frame (fresh map there). Path dependence:
+    // zratio (end/start z of the first pass) times the reverse run's zratio is 1 for real height changes.
+    if std::env::var("WEBAR_REPLAY_REVERSE").is_ok_and(|v| v == "1") {
+        rows.reverse();
+    }
     let env = |k: &str| std::env::var(k).ok().map(|v| v.parse::<f32>().expect(k));
     rows.truncate(env("WEBAR_REPLAY_END").map_or(rows.len(), |n| n as usize));
     let fov = env("WEBAR_REPLAY_FOV");
@@ -148,7 +153,11 @@ fn replay() {
     let q = |p: f32| gaps.get(((gaps.len() as f32 * p) as usize).min(gaps.len().saturating_sub(1))).copied().unwrap_or(f32::NAN);
     println!("fwd/back gap on {} frames Normal both ways: median {:.3} p95 {:.3} max {:.3}", gaps.len(), q(0.5), q(0.95), q(1.0));
     // One line per run for scripts/replay-seeds.ps1.
-    println!("SUMMARY lost {} limited {} closure {gap:.3} zspread {:.3} gapmed {:.3} gap95 {:.3} gapmax {:.3} ms {:.2} msmax {ms_max:.2}", states[3], states[2], zr.1 - zr.0, q(0.5), q(0.95), q(1.0), ms_sum / order.len() as f64);
+    let zratio = match (start, last) {
+        (Some((_, a)), Some(b)) => b[2] / a[2],
+        _ => f32::NAN,
+    };
+    println!("SUMMARY lost {} limited {} closure {gap:.3} zratio {zratio:.3} zspread {:.3} gapmed {:.3} gap95 {:.3} gapmax {:.3} ms {:.2} msmax {ms_max:.2}", states[3], states[2], zr.1 - zr.0, q(0.5), q(0.95), q(1.0), ms_sum / order.len() as f64);
     if let Some(m) = env("WEBAR_REPLAY_MAX_ERR") {
         assert!(gap <= m && zr.1 - zr.0 <= m, "pose error over {m}: closure {gap:.3}, z spread {:.3}", zr.1 - zr.0);
     }
