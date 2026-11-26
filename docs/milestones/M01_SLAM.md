@@ -26,6 +26,11 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: 60 fps target.
+  - Phone frame work: copy 2.5 + upload ~4 + GPU ~6 + unpack 1.4 + track ~3 ms, run serially, about 17 ms.
+  - The page now keeps two frames in flight. The next camera frame is drawn, uploaded and submitted while the previous one waits on the GPU, so frame time becomes max(CPU ~11, GPU ~6) instead of the sum. Each slot has its own canvas, so a frame shows the pixels it tracked. A frame is dropped when both slots are busy. The camera is asked for 60 fps (`frameRate: { ideal: 60 }`).
+  - Pose delay stays one frame. The FAST threshold reads one frame stale.
+  - Desktop: 4 overlapping `detect` calls on WebGPU run without error (500 keypoints each, Normal). Not run on the phone. Measure: HUD fps.
 - 2026-11-26: Phone, `?src=video` against the canvas path: upload 2.9–3.1 vs ~4.0 ms, but GPU 7.0–7.8 vs 5.0–6.0 ms (the luma pass now runs on 4x the pixels, plus a scale pass). Net ~1 ms worse. The image was also laggy, offset and inverted: the video element copy ignores the camera orientation that `drawImage` applies. Reverted to 8a2e540 (canvas path, gpu/map/unpack HUD).
   - The ~4 ms upload stays: only a raw `importExternalTexture` pass outside wgpu could remove it, and the same orientation would have to be handled there. Not worth it at 29.9 fps, which the camera's 30 fps caps anyway.
 - 2026-11-26: Diagnostic build for the frame upload.

@@ -59,7 +59,7 @@
     try {
       const sensorOk = (await perm) === "granted";
       video.srcObject = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false,
+        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } }, audio: false,
       });
       await video.play();
       const tracker = await Tracker.create($("gl"), webgpu, FOV);
@@ -72,7 +72,10 @@
       // Pixels come from a hidden canvas so the visible one only ever shows a frame with its overlay
       // (the browser presents during the await, which would show the frame before it is drawn).
       // No willReadFrequently: that keeps the canvas on the CPU; the GPU copies it straight into a texture.
-      const work = new OffscreenCanvas(w, h).getContext("2d");
+      // Two frames in flight: the next one is copied and submitted while this one waits on the GPU, so the
+      // frame time is max(CPU, GPU), not their sum. One canvas each: a frame shows the pixels it tracked.
+      const works = [0, 1].map(() => new OffscreenCanvas(w, h).getContext("2d"));
+      let inFlight = 0, slot = 0;
       let emaMs = 0, emaFps = 0, emaSplit = [], last = performance.now(), anchor = null, tracked = 0; // tracked: time of the last Normal/Limited frame
 
       // Project world point X with pose array p (see Tracker.pose); null if behind the camera.
@@ -93,6 +96,10 @@
       const recSession = Date.now(); // one recordings/ dir per page load
       const frame = async (now, meta) => {
         if (meta) { gotVfc = true; driver = "video frames"; }
+        next();
+        if (inFlight >= 2) return; // both slots busy: drop this camera frame
+        inFlight++;
+        const work = works[slot++ & 1];
         try {
         const tc = performance.now();
         work.drawImage(video, 0, 0, w, h);
@@ -160,8 +167,9 @@
             : "waiting for sensor…");
         } catch (e) {
           hud.textContent = `frame error: ${e}`;
+        } finally {
+          inFlight--;
         }
-        next();
       };
       // One callback per new camera frame; falls back to rAF if the browser never fires it (hidden video).
       let vfcGaveUp = false;
