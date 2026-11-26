@@ -15,11 +15,11 @@ js-sys = "0.3"
 wgpu = { version = "=30.0.2", default-features = false, features = ["webgpu", "wgsl"] }
 web-sys = { version = "0.3", features = [
     "HtmlCanvasElement", "WebGl2RenderingContext", "WebGlProgram", "WebGlShader",
-    "WebGlTexture", "WebGlFramebuffer", "WebGlUniformLocation",
+    "WebGlTexture", "OffscreenCanvas", "OffscreenCanvasRenderingContext2d", "ImageData", "WebGlFramebuffer", "WebGlUniformLocation",
 ] }
 
 [profile.release]
-opt-level = "z"
+opt-level = 3 # 2.3x faster track() than "z" (replay 5.4 -> 2.4 ms) for +6.5 KB gzip
 lto = true
 codegen-units = 1
 panic = "abort"

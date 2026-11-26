@@ -18,7 +18,7 @@
 ## Verification (built right)
 - [ ] V1: Recorded-sequence test (`tests/replay.rs` on `recordings/`): pose error under a threshold (_open: needs a constant-height recording for z truth_).
 - [ ] V2: Same sequence gives matching poses with WebGPU forced off (WebGL path).
-- [ ] V3: Occlude-then-uncover test: state goes lost → normal and pose snaps back.
+- [x] V3: Occlude-then-uncover test: state goes lost → normal and pose snaps back (replays of 2 phone recordings, 2026-11-25).
 - [ ] V4: Frame-time benchmark on target devices meets R5.
 - [x] V5: Dependency license audit (e.g. `cargo deny check licenses`) passes.
 
@@ -26,6 +26,48 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-25: Second build round, all in code. **Not validated: no replay or phone run (test later).**
+  - **Time and IMU end to end:**
+    - `update` takes the capture time and gravity-free acceleration. The page sends `devicemotion` and requests its permission on iOS.
+    - The recorder writes `ax, ay, az` after the time column. Old recordings still replay, but their results will change with this build. The frame interval is taken as an absolute value, because replays also run backward.
+    - Turn gating is now per second (70 °/s).
+  - **Metric scale and IMU offset** (`src/imu.rs`, loose like 8th Wall, not preintegration):
+    - They come from a 150-frame window: low-passed visual vs IMU acceleration at the lag of best correlation, over the window's mean frame interval. Scale = aa/va: with ~4 mm tracking jitter, va/vv read 1.390 and aa/va 1.401 for a true 1.4.
+    - They are reported in `pose()` and on the HUD; nothing in the solve uses them.
+  - **Epipolar points:** each keyframe stores keypoints with no map point. A new keyframe matches them against the last 3 (Hamming ≤ 32, ratio 0.8), and the rays must meet with ≥ 4° parallax, above the floor. These are the first off-floor points that don't start as floor seeds.
+  - **Joint local BA:** Gauss-Newton with a Cauchy loss, points eliminated by Schur complement, 12×12 camera system. It replaces the alternation. The oldest keyframe and floor points stay fixed, and a point is solved only if its window rays have ≥ 4° parallax.
+  - **Keyframes:** the low-map rule now counts map points, as in 8th Wall (was inliers). Only the 4-keyframe window is kept, because nothing reads older ones. A redundant keyframe (≥ 70% shared, < half the baseline) is skipped.
+  - **Landscape:** camera axes turn by `screen.orientation.angle`, and a rotation starts a new map. The sign is from the W3C definition, not yet checked on a phone.
+  - **GPU:**
+    - Textures are pooled in both backends; uploads into reused textures use `texSubImage2D`.
+    - The HUD splits `gpu` into encode and wait.
+    - Parity PASS on desktop WebGL2 and WebGPU. wasm 127 KB gzip (was 97.5).
+  - **Self-checks:** the scale and lag estimator recovers 1.4 m/unit and 3 frames from a noisy synthetic sway. BA recovers keyframes nudged ~1 cm / 0.3° and wall points nudged ~1 cm, within 5 mm and 0.1°; points seen by ≥ 3 keyframes average < 4 mm. Epipolar creation puts synthetic wall corners within 1 mm. 37 host tests.
+  - **Not exercised by host tests:** level prediction, east-oriented descriptors end to end, keyframe views, epipolar creation, the IMU path from page to tracker, landscape, and texture pool reuse across frames.
+  - **Watch in the test round:**
+    - If the HUD scale stays "-" on the iPhone, check the sign of the acceleration correlation first.
+    - Keyframe frames (epipolar + BA) will spike `track()`: judge on the replay's max ms, not the mean.
+  - **Still out:**
+    - Patch warp, GPU descriptors with keypoint-only readback, and threshold retuning: each needs measurements first.
+    - WebGL PBO readback (changes frame timing) and per-device intrinsics.
+- 2026-11-25: Phase 3 in a lightweight form, in code, from the [gap analysis](../research/2026-11-25_8THWALL_GAP_ANALYSIS.md). **Not validated: no replay or phone run yet (test after).**
+  - Floor keypoints are described with the image direction of world east, which stays fixed as the camera moves. Gravity was rejected: on the floor it points to the camera's foot. Other keypoints keep the centroid angle.
+  - Guided matching only accepts keypoints within ±1 of the pyramid level predicted from distance. It tries the point's latest descriptor plus up to 3 keyframe descriptors; global matching uses the latest only.
+  - Constant-velocity prediction for guided matching, zeroed on Lost and on relocalization.
+  - No map upkeep above 0.04 rad/frame of sensor turn (~70 °/s at 30 fps).
+  - Keyframes: cooldown 5 frames, then on ≥ 20 new points, < 120 inliers, or 0.1 camera heights moved. Capped at 64.
+  - Local BA over 4 keyframes by alternation. Points are re-triangulated from all rays if they fit every view; keyframe poses get Gauss-Newton steps on still-fitting observations. The first version without that filter dropped confirmed platform points 26 → 19.
+  - Points that move (re-triangulation, BA) rescale their stored distance, or level prediction would reject their own corner. BA never moves a point to within 0.05 of the floor (z = 0 pins scale).
+  - The host tests use level 0 and exact geometry, so they don't exercise level prediction, the canonical angle end to end, or keyframe views. V3's tick predates this build; the canonical angle drifts with yaw while Lost.
+  - First things to check in the test round: whether `inliers < 120` makes a keyframe every 5 frames, and `track()` time (up to 4 Hamming distances per candidate).
+  - 34 host tests, wasm release builds. Left out: phase 4 (tight IMU) and phase 5 (fps), epipolar search for new points, redundant-keyframe culling.
+- 2026-11-25: 8th Wall gap analysis ([note](../research/2026-11-25_8THWALL_GAP_ANALYSIS.md)). Architecture already matches, including what 8th Wall leaves off (loop closure, global BA). Found: live tracking uses centroid-angle descriptors (`lib.rs:40`), while 8th Wall tracks with gravity-oriented ORB. That is the top suspect for the 42% "descriptor too far" loss. Next: gravity descriptors, then level-predicted matching, gyro gating and velocity prediction, each judged on 3 seeds. Not run.
+- 2026-11-25: Phone, canvas straight to GPU: copy 5.0 → ~2.1 ms, gpu 7–9 → 10–12 ms, track ~2.5. Net frame work unchanged (~15.5 ms): the cost moved from the readback into the GPU copy/wait, as feared. Kept (no worse, simpler path). Next: time the `gpu` part internally (encode + allocation vs wait for the GPU) before changing more.
+- 2026-11-25: Camera frame straight to the GPU: the page still scales the video with `drawImage` on a hidden canvas (same pixels as the recordings), but no longer calls `getImageData`; `Tracker.detect` takes the canvas and both backends copy it into a texture (`copyExternalImageToTexture` on WebGPU, `texImage2D` on WebGL). The canvas drops `willReadFrequently`, which kept it on the CPU. Recording reads pixels back only when `?record=1`. Parity now feeds its frame through a canvas too: PASS byte-exact on desktop WebGL2 + WebGPU. wasm 97.5 KB gzip, 33 host tests. Not yet on the phone.
+- 2026-11-25: Phone split after the first pass (iPhone 16e, WebGPU 360x640): copy ~5.0 ms, gpu 7–9 ms, track 2–2.5 ms. Detect (gpu + track) ~10 ms, was 19–21. Frame work ~15 ms incl. the copy: under the 16.7 ms of 60 fps with little margin. Next: copy the video straight into a GPU texture (removes canvas copy and RGBA upload), then pool textures.
+- 2026-11-25: Detect time (R5), first pass. WebGPU reads all 4 pyramid levels back in one submit and one wait (was 4 sequential round trips). Release builds at `opt-level = 3` instead of `"z"`: replay `track()` 5.41 → 2.38 ms (tilt) and 3.44 → 2.23 ms (grey), identical output, wasm 89.9 → 96.4 KB gzip (`"s"`: 3.69 ms, same size, rejected). HUD shows the split `copy / gpu / track` ms (`copy` = canvas drawImage + getImageData, outside `detect`). Parity PASS on desktop WebGL2 + WebGPU, 33 host tests. Not yet on the phone: the split decides the next step (texture pooling, canvas copy, or tracker).
+- 2026-11-25: Live phone run of f0b8583 (iPhone 16e, WebGPU 360x640, screen recording on, 12 s): Normal while walking, z 0.99–1.04, lost on a cover and Normal again within ~1 s, map 995–1463. fps 30.0–30.6 (paced by the 30 fps video frames), detect 19.2–21.0 ms: the R5 30 fps floor holds on this device, but 60 fps needs detect well under 16 ms. Recording upload showed `REC 0/300 FAILED 3` in this clip (server not in record mode).
+- 2026-11-25: Three phone recordings of the f0b8583 build, replayed (3 seeds not run, default only). Tilt at constant height (`14-01-54`, pitch 64–89°): Normal 585/599, never lost, z 0.91–1.05: height no longer follows pitch, so the earlier rises were real lifts. Two covered-lens runs (`14-02-15`, `14-02-35`, cover ≈ frames 115–195): Normal until the cover, Lost under it, then Limited → Normal 2–6 frames after uncover by relocalization onto the old map (map size unchanged, no re-seed). First run snaps back within 0.05; the second comes back 0.37 off in y (unknown whether the phone moved under the cover). `track()` mean 4.0–5.3 ms native. V3 ticked. Not measured: live fps/detect on the phone during these runs.
 - 2026-11-25: License audit (R6, V5): every dependency crate in `cargo metadata` is MIT, Apache-2.0, Zlib, ISC, BSD-2-Clause, Unicode-3.0 or Unlicense; no GPL or non-commercial. The web side uses Node built-ins only. cargo-deny is not installed; re-run: `cargo metadata --format-version 1` and list each package's `license`.
 - 2026-11-25: Relocalization guards and descriptor refresh, judged on 3 RANSAC seeds (the seed alone moves room 103–130 lost, grey 0–7) and sensor shifts ±0.25. One seed relocalized 26–30 units away, below the floor, as Normal and culled the map with that pose. Fixes: a relocalized pose is confirmed by guided matching from it in the same frame; a pose below the floor is Lost; a relocalization may not change height by more than half the camera height; Normal needs ≥ 1/8 agreement (good Normal frames agree ≥ 16% across seeds and shifts). New replay metric, outcome of in-image points ≥ 50 frames old: descriptor too far is the main loss (24/34/48% corridor/room/grey), then ratio-rejected (30/21/13%); no keypoint near only 4/4/22%. Refreshing a point's descriptor on each inlier: old inliers 13k → 26k / 18k → 25k / 9k → 23k, same `track()` time. Up to 4 views per point: little more (room +10%, grey none) and let a relocalization 20 units off through, so rejected. Final, 3 seeds + shifts ±0.25: grey and corridor 0 lost, room 100–118 (was 92–130), no pose jumps, z ranges no wider. 32 host tests. `raised_points_get_their_true_height` failed under one seed: it counted unconfirmed floor hypotheses (no 4° parallax yet) as wrong heights; it now judges confirmed points and passes on 5 seeds. Next: not settled by replays alone (descriptor distance still 42% of grey's old points). Not run on the phone.
 - 2026-11-25: Keyframes on hold. Height follows phone pitch in both new recordings, carried only by fresh points, with no pitch bias found: likely a real lift, not drift keyframes would fix. Needs a constant-height recording (also V1's z reference). Next: keyframe store with multi-view descriptors, judged by re-matched old points on the grey replay. Details: [replay analysis](../research/2026-11-25_PHONE_REPLAY_ANALYSIS.md).

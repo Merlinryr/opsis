@@ -8,7 +8,7 @@
 //! passes. Closure only: errors symmetric in both directions (FOV, scale) cancel, and the way back
 //! re-tracks the forward map. The forward z range (true height is constant) catches some of those.
 use std::time::Instant;
-use webar::geom::camera_from_orientation;
+use webar::geom::{camera_from_orientation, camera_in_device, mulv, transpose};
 use webar::image::{Gray, pyramid};
 use webar::orb::BORDER;
 use webar::slam::{Intrinsics, Slam, State};
@@ -19,7 +19,7 @@ use webar::{FrontEnd, readback, track};
 fn replay() {
     let dir = std::path::PathBuf::from(std::env::var("WEBAR_REPLAY").expect("set WEBAR_REPLAY to a recordings/<session> dir"));
     let meta = std::fs::read_to_string(dir.join("meta.csv")).expect("meta.csv");
-    // Columns: index, w, h, alpha, beta, gamma, fov[, capture time ms]. Recordings made before the
+    // Columns: index, w, h, alpha, beta, gamma, fov[, capture time ms[, ax, ay, az]]. Recordings made before the
     // capture index was sent are in upload order, which can differ from capture order.
     let mut rows: Vec<Vec<f32>> = meta.lines().map(|l| l.split(',').map(|v| v.parse().unwrap()).collect()).collect();
     rows.sort_by(|a, b| a[0].total_cmp(&b[0]));
@@ -67,7 +67,11 @@ fn replay() {
         let s = slam.get_or_insert_with(|| Slam::new(Intrinsics::from_fov(w, h, fov.unwrap_or(r[6]))));
         let threshold = cfg.fast_threshold;
         let t0 = Instant::now();
-        let kps = track(&rb, &mut cfg, Some(s), &camera_from_orientation(r[3], r[4], r[5]), true);
+        // Optional columns: capture time (ms), then gravity-free device acceleration (recordings since IMU capture).
+        let t = r.get(7).map_or(f64::NAN, |&t| t as f64);
+        // shortcut: recordings are portrait (screen angle 0); record the angle if landscape replays are needed.
+        let accel = r.get(8..11).map(|a| mulv(&transpose(&camera_in_device(0.0)), [a[0], a[1], a[2]])).filter(|a| a.iter().all(|v| v.is_finite()));
+        let kps = track(&rb, &mut cfg, Some(s), &camera_from_orientation(r[3], r[4], r[5], 0.0), t, accel, true);
         let ms = t0.elapsed().as_secs_f64() * 1e3;
         (ms_sum, ms_max) = (ms_sum + ms, ms_max.max(ms));
         states[s.state as usize] += 1;

@@ -51,13 +51,18 @@ pub fn rot_z(t: f32) -> M3 {
     [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
 }
 
-/// Camera-to-world rotation from W3C `deviceorientation` angles (degrees), portrait screen.
-/// Device frame (x right, y up, z out of the screen) is R = Rz(alpha) Rx(beta) Ry(gamma);
-/// the back camera flips y and z.
-// shortcut: portrait only; landscape needs a rotation by screen.orientation.angle.
-pub fn camera_from_orientation(alpha: f32, beta: f32, gamma: f32) -> M3 {
+/// Camera axes (x right, y down, z forward, as the video shows them) in device axes (x right, y up, z out
+/// of the screen in portrait), for `screen_deg` = `screen.orientation.angle`: the image turns with the screen.
+// shortcut: sign of the landscape turn follows the W3C definition, not yet checked on a phone.
+pub fn camera_in_device(screen_deg: f32) -> M3 {
+    mul(&rot_z(screen_deg.to_radians()), &[[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
+}
+
+/// Camera-to-world rotation from W3C `deviceorientation` angles (degrees) and the screen angle.
+/// Device frame to world is R = Rz(alpha) Rx(beta) Ry(gamma); the back camera flips y and z.
+pub fn camera_from_orientation(alpha: f32, beta: f32, gamma: f32, screen_deg: f32) -> M3 {
     let r = mul(&mul(&rot_z(alpha.to_radians()), &rot_x(beta.to_radians())), &rot_y(gamma.to_radians()));
-    mul(&r, &[[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
+    mul(&r, &camera_in_device(screen_deg))
 }
 
 /// Midpoint of the closest approach of rays c1 + s d1 and c2 + t d2 (unit directions), if both
@@ -109,7 +114,7 @@ mod tests {
 
     /// Gravity (world -z) seen in camera axes.
     fn gravity_in_camera(alpha: f32, beta: f32, gamma: f32) -> V3 {
-        mulv(&transpose(&camera_from_orientation(alpha, beta, gamma)), [0.0, 0.0, -1.0])
+        mulv(&transpose(&camera_from_orientation(alpha, beta, gamma, 0.0)), [0.0, 0.0, -1.0])
     }
 
     #[test]

@@ -4,6 +4,9 @@
 use crate::gpu::{Gpu, Pass};
 use crate::image::Gray;
 use wasm_bindgen::JsValue;
+use std::cell::RefCell;
+use std::rc::Rc;
+use web_sys::OffscreenCanvas;
 
 const WGSL: &str = r#"
 @group(0) @binding(0) var src: texture_2d<f32>;
@@ -84,6 +87,20 @@ pub struct Tex {
     t: wgpu::Texture,
     w: usize,
     h: usize,
+    pool: Pool,
+}
+
+/// Textures freed by dropped `Tex`es, reused by size and format: the front end makes ~20 per frame.
+type Pool = Rc<RefCell<Vec<wgpu::Texture>>>;
+
+impl Drop for Tex {
+    fn drop(&mut self) {
+        let mut pool = self.pool.borrow_mut();
+        pool.push(self.t.clone());
+        if pool.len() > 64 {
+            pool.remove(0); // sizes from an old screen orientation: let the oldest go
+        }
+    }
 }
 
 pub struct Wgpu {
@@ -91,6 +108,7 @@ pub struct Wgpu {
     queue: wgpu::Queue,
     layout: wgpu::BindGroupLayout,
     pipes: [wgpu::RenderPipeline; 5],
+    pool: Pool,
 }
 
 fn err(e: impl std::fmt::Display) -> JsValue {
@@ -148,13 +166,16 @@ impl Wgpu {
             })
         };
         let pipes = [pipe("luma"), pipe("blur"), pipe("down"), pipe("fast"), pipe("nms")];
-        Ok(Self { device, queue, layout, pipes })
+        Ok(Self { device, queue, layout, pipes, pool: Pool::default() })
     }
 
-    // shortcut: allocates a texture per call; pool and reuse per level before per-frame use.
     fn texture(&self, w: usize, h: usize, format: wgpu::TextureFormat, data: Option<&[u8]>) -> Tex {
         let size = wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 };
-        let t = self.device.create_texture(&wgpu::TextureDescriptor {
+        let reuse = {
+            let mut pool = self.pool.borrow_mut();
+            pool.iter().position(|t| t.size() == size && t.format() == format).map(|i| pool.swap_remove(i))
+        };
+        let t = reuse.unwrap_or_else(|| self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size,
             mip_level_count: 1,
@@ -166,7 +187,7 @@ impl Wgpu {
                 | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
-        });
+        }));
         if let Some(data) = data {
             let bpp = (data.len() / (w * h)) as u32;
             self.queue.write_texture(
@@ -176,7 +197,7 @@ impl Wgpu {
                 size,
             );
         }
-        Tex { t, w, h }
+        Tex { t, w, h, pool: self.pool.clone() }
     }
 }
 
@@ -193,6 +214,24 @@ impl Gpu for Wgpu {
 
     fn upload_gray(&self, g: &Gray) -> Result<Tex, JsValue> {
         Ok(self.texture(g.w, g.h, wgpu::TextureFormat::R8Unorm, Some(&g.data)))
+    }
+
+    fn upload_canvas(&self, c: &OffscreenCanvas) -> Result<Tex, JsValue> {
+        let (w, h) = (c.width() as usize, c.height() as usize);
+        let t = self.texture(w, h, wgpu::TextureFormat::Rgba8Unorm, None);
+        self.queue.copy_external_image_to_texture(
+            &wgpu::CopyExternalImageSourceInfo { source: wgpu::ExternalImageSource::OffscreenCanvas(c.clone()), origin: wgpu::Origin2d::ZERO, flip_y: false },
+            wgpu::CopyExternalImageDestInfo {
+                texture: &t.t,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+                color_space: wgpu::PredefinedColorSpace::Srgb,
+                premultiplied_alpha: false,
+            },
+            wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+        );
+        Ok(t)
     }
 
     fn run(&self, pass: Pass, src: &Tex, src2: Option<&Tex>, w: usize, h: usize) -> Result<Tex, JsValue> {
@@ -247,31 +286,52 @@ impl Gpu for Wgpu {
     }
 
     async fn read(&self, t: &Tex) -> Result<Vec<u8>, JsValue> {
-        let row = (t.w * 4).next_multiple_of(256); // WebGPU copy rows must be 256-byte aligned
-        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (row * t.h) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        Ok(self.read_all(std::slice::from_ref(t)).await?.remove(0))
+    }
+
+    /// One submit and one wait for all textures: each separate map_async is a full GPU round trip.
+    async fn read_all(&self, ts: &[Tex]) -> Result<Vec<Vec<u8>>, JsValue> {
+        let row = |t: &Tex| (t.w * 4).next_multiple_of(256); // WebGPU copy rows must be 256-byte aligned
         let mut enc = self.device.create_command_encoder(&Default::default());
-        enc.copy_texture_to_buffer(
-            t.t.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buf,
-                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row as u32), rows_per_image: None },
-            },
-            wgpu::Extent3d { width: t.w as u32, height: t.h as u32, depth_or_array_layers: 1 },
-        );
+        let bufs: Vec<_> = ts
+            .iter()
+            .map(|t| {
+                let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: (row(t) * t.h) as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                enc.copy_texture_to_buffer(
+                    t.t.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &buf,
+                        layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row(t) as u32), rows_per_image: None },
+                    },
+                    wgpu::Extent3d { width: t.w as u32, height: t.h as u32, depth_or_array_layers: 1 },
+                );
+                buf
+            })
+            .collect();
         self.queue.submit([enc.finish()]);
-        let done = js_sys::Promise::new(&mut |resolve, reject| {
-            buf.map_async(wgpu::MapMode::Read, .., move |r| {
-                let f = if r.is_ok() { resolve } else { reject };
-                let _ = f.call0(&JsValue::NULL);
-            });
-        });
-        wasm_bindgen_futures::JsFuture::from(done).await?;
-        let mapped = buf.get_mapped_range(..).map_err(err)?;
-        Ok(mapped.chunks(row).flat_map(|r| &r[..t.w * 4]).copied().collect())
+        let maps: js_sys::Array = bufs
+            .iter()
+            .map(|buf| {
+                js_sys::Promise::new(&mut |resolve, reject| {
+                    buf.map_async(wgpu::MapMode::Read, .., move |r| {
+                        let f = if r.is_ok() { resolve } else { reject };
+                        let _ = f.call0(&JsValue::NULL);
+                    });
+                })
+            })
+            .collect();
+        wasm_bindgen_futures::JsFuture::from(js_sys::Promise::all(&maps)).await?;
+        ts.iter()
+            .zip(&bufs)
+            .map(|(t, buf)| {
+                let mapped = buf.get_mapped_range(..).map_err(err)?;
+                Ok(mapped.chunks(row(t)).flat_map(|r| &r[..t.w * 4]).copied().collect())
+            })
+            .collect()
     }
 }

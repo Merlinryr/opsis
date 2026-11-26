@@ -3,6 +3,7 @@
 pub mod fast;
 pub mod geom;
 pub mod image;
+pub mod imu;
 pub mod orb;
 pub mod readback;
 pub mod slam;
@@ -34,13 +35,20 @@ impl Default for FrontEnd {
 
 /// CPU half of one tracked frame, shared by the browser `Tracker` and the replay test:
 /// keypoints + descriptors from the GPU (or CPU) readback, threshold adaptation, SLAM update.
-/// `slam` is None without a sensor; `vision` false applies the sensor rotation only.
-pub fn track(levels: &[readback::Level], cfg: &mut FrontEnd, slam: Option<&mut slam::Slam>, sensor: &geom::M3, vision: bool) -> Vec<fast::Keypoint> {
-    // Phase 2/3 descriptors use the intensity centroid everywhere (open decision in the SLAM design note).
-    let (kps, desc) = readback::features(levels, cfg, |_| None);
+/// `slam` is None without a sensor; `vision` false applies the sensor rotation only. `t`: capture time (ms,
+/// NaN if unknown); `accel`: gravity-free acceleration in camera axes (m/s^2) if the page has it.
+pub fn track(levels: &[readback::Level], cfg: &mut FrontEnd, slam: Option<&mut slam::Slam>, sensor: &geom::M3, t: f64, accel: Option<geom::V3>, vision: bool) -> Vec<fast::Keypoint> {
+    let Some(slam) = slam else {
+        let (kps, _) = readback::features(levels, cfg, |_| None);
+        cfg.fast_threshold = cfg.adapt(kps.len());
+        return kps;
+    };
+    // Floor keypoints are oriented by the world east axis (stable as the camera moves), others by the centroid.
+    slam.orient(sensor);
+    let (kps, desc) = readback::features(levels, cfg, |k| slam.canonical_angle(k.x, k.y));
     cfg.fast_threshold = cfg.adapt(kps.len());
-    if let Some(slam) = slam {
-        if vision { slam.update(&kps, &desc, sensor) } else { slam.orient(sensor) }
+    if vision {
+        slam.update(&kps, &desc, sensor, t, accel);
     }
     kps
 }

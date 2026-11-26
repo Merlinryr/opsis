@@ -3,8 +3,10 @@
 
 use crate::gpu::{Gpu, Pass};
 use crate::image::Gray;
+use std::cell::RefCell;
+use std::rc::Rc;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{HtmlCanvasElement, WebGl2RenderingContext as GL, WebGlProgram, WebGlTexture};
+use web_sys::{HtmlCanvasElement, OffscreenCanvas, WebGl2RenderingContext as GL, WebGlProgram, WebGlTexture};
 
 const VS: &str = "#version 300 es
 void main() {
@@ -86,17 +88,28 @@ pub struct Tex {
     gl: GL,
     pub w: usize,
     pub h: usize,
+    internal: u32,
+    pool: Pool,
 }
+
+/// Textures freed by dropped `Tex`es (texture, w, h, internal format), reused instead of reallocated.
+type Pool = Rc<RefCell<Vec<(WebGlTexture, usize, usize, u32)>>>;
+const POOL_MAX: usize = 64; // beyond this (sizes from an old screen orientation) the oldest are freed
 
 impl Drop for Tex {
     fn drop(&mut self) {
-        self.gl.delete_texture(Some(&self.t)); // WebGL never frees textures on its own
+        let mut pool = self.pool.borrow_mut();
+        pool.push((self.t.clone(), self.w, self.h, self.internal));
+        if pool.len() > POOL_MAX {
+            self.gl.delete_texture(Some(&pool.remove(0).0)); // WebGL never frees textures on its own
+        }
     }
 }
 
 pub struct Gl {
     gl: GL,
     progs: [WebGlProgram; 5],
+    pool: Pool,
 }
 
 fn err(m: impl Into<String>) -> JsValue {
@@ -127,12 +140,23 @@ impl Gl {
         let fbo = gl.create_framebuffer().ok_or_else(|| err("fbo"))?;
         gl.bind_framebuffer(GL::FRAMEBUFFER, Some(&fbo));
         gl.pixel_storei(GL::UNPACK_ALIGNMENT, 1);
-        Ok(Self { gl, progs })
+        Ok(Self { gl, progs, pool: Pool::default() })
     }
 
-    // shortcut: allocates a texture per call; pool and reuse per level before per-frame use.
+    /// A `w` x `h` texture, left bound: from the pool when one matches (contents then undefined unless `data`).
     fn texture(&self, w: usize, h: usize, internal: u32, format: u32, data: Option<&[u8]>) -> Result<Tex, JsValue> {
         let gl = &self.gl;
+        let reuse = {
+            let mut pool = self.pool.borrow_mut();
+            pool.iter().position(|p| (p.1, p.2, p.3) == (w, h, internal)).map(|i| pool.swap_remove(i).0)
+        };
+        if let Some(t) = reuse {
+            gl.bind_texture(GL::TEXTURE_2D, Some(&t));
+            if data.is_some() {
+                gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(GL::TEXTURE_2D, 0, 0, 0, w as i32, h as i32, format, GL::UNSIGNED_BYTE, data)?;
+            }
+            return Ok(Tex { t, gl: gl.clone(), w, h, internal, pool: self.pool.clone() });
+        }
         let t = gl.create_texture().ok_or_else(|| err("texture"))?;
         gl.bind_texture(GL::TEXTURE_2D, Some(&t));
         for p in [GL::TEXTURE_MIN_FILTER, GL::TEXTURE_MAG_FILTER] {
@@ -141,7 +165,7 @@ impl Gl {
         gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
             GL::TEXTURE_2D, 0, internal as i32, w as i32, h as i32, 0, format, GL::UNSIGNED_BYTE, data,
         )?;
-        Ok(Tex { t, gl: gl.clone(), w, h })
+        Ok(Tex { t, gl: gl.clone(), w, h, internal, pool: self.pool.clone() })
     }
 }
 
@@ -158,6 +182,12 @@ impl Gpu for Gl {
 
     fn upload_gray(&self, g: &Gray) -> Result<Tex, JsValue> {
         self.texture(g.w, g.h, GL::R8, GL::RED, Some(&g.data))
+    }
+
+    fn upload_canvas(&self, c: &OffscreenCanvas) -> Result<Tex, JsValue> {
+        let t = self.texture(c.width() as usize, c.height() as usize, GL::RGBA8, GL::RGBA, None)?; // leaves it bound
+        self.gl.tex_sub_image_2d_with_u32_and_u32_and_offscreen_canvas(GL::TEXTURE_2D, 0, 0, 0, GL::RGBA, GL::UNSIGNED_BYTE, c)?; // same size: no reallocation
+        Ok(t)
     }
 
     fn run(&self, pass: Pass, src: &Tex, src2: Option<&Tex>, w: usize, h: usize) -> Result<Tex, JsValue> {
