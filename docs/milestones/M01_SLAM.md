@@ -31,6 +31,7 @@
 - **Quality, not a checkbox:** ~5–10% height (scale) creep per 10 s walk (`zratio` forward × reverse 1.04–1.24); see the log.
 
 ## Log
+- 2026-11-26: Loop-to-a-mark take `22-01-16` (owner, phone ~1.30 m, 20 s, ~1 m path, 3 seeds): 594 of 599 frames Normal, closure gap 0.003–0.006 units (0.4–0.8% of path), height dips 4% at the far end and returns to 1.00 at the mark. No accumulating creep on this short loop; the creep seen on longer walks is still open. IMU scale found nothing (too little motion to excite the accelerometer).
 - 2026-11-26: Fast-turn tracking hold tried and rejected (5 seeds × 9 takes against the `MAX_MAP` 3000 baseline). Map edits above 70°/s were already gated; this also skipped the pose solve, holding position and following the sensor rotation.
   - Reported Limited: gap max medians improve (`12-06-23` 0.064 → 0.043, `10-43-54` 0.093 → 0.057, `10-51-41` 0.092 → 0.055) and lost falls (`10-51-41` 73 → 38). But resuming from the held pose let wrong matches through on worst seeds: gap max 2.8 (`10-44-12`), 8.7 (`10-51-41`), and `12-43-04` closure 0.72.
   - Reported Lost (resume through relocalization): the large worst cases are gone and the gap medians improve. But lost rises (`10-51-41` 73 → 110, `12-06-23` 0 → 24), and `12-43-04` fails on most seeds (closure median 0.60, gap max 0.67).
