@@ -89,7 +89,7 @@ const CAMERA_HEIGHT: f32 = 1.0;
 const MIN_BELOW_HORIZON: f32 = 0.26; // sin(15 deg): depth error explodes near the horizon
 const MAX_DEPTH: f32 = 4.0 * CAMERA_HEIGHT;
 const MIN_INIT_POINTS: usize = 100; // 40 started on blurry frames with a map too thin to track (phone replay)
-const MAX_MAP: usize = 3000; // 1500 filled by frame 60 on a 1.8 m walk and evicted the start area: drift on the way back (12-43-04). 3000: closure medians 0.004-0.041 -> 0.003-0.009 over 5 seeds x 9 replays, lost 102 -> 73 on 10-51-41, track max +0-40%
+const MAX_MAP: usize = 3000; // 1500 filled by frame 60 on a 1.8 m walk (12-43-04). 3000: closure medians 0.004-0.041 -> 0.003-0.009 on the other takes over 5 seeds, lost 102 -> 73 on 10-51-41 (12-43-04 itself unchanged), track max +0-40%
 const MAX_ADD: usize = 50;
 const MATCH_DIST: u32 = 64;
 const INLIER_PX: f32 = 4.0;
@@ -164,6 +164,8 @@ pub struct Slam {
     /// Replay metrics, cumulative.
     pub reseeds: u32,
     pub merges: u32,
+    /// Replay diagnostic: (birth frame, RANSAC inlier) of each match this frame.
+    pub matched_born: Vec<(u32, bool)>,
 }
 
 /// One 2D-3D correspondence: world point and camera-frame ray.
@@ -172,7 +174,7 @@ type Pair = (V3, V3);
 impl Slam {
     pub fn new(k: Intrinsics) -> Self {
         let r = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, matches: 0, old: [0; 6], lost_frames: 0, frame: 0, rng: 0x2545_F491, v: [0.0; 3], last_sensor: r, keyframes: Vec::new(), last_kf: 0, next_id: 0, last_t: f64::NAN, frame_dt: FRAME_S, motion: Vec::new(), metres_per_unit: None, imu_lag_ms: None, stash: Vec::new(), reseeds: 0, merges: 0 }
+        Self { k, map: Vec::new(), c: [0.0, 0.0, CAMERA_HEIGHT], yaw: 0.0, r, state: State::Initializing, inliers: 0, matches: 0, old: [0; 6], lost_frames: 0, frame: 0, rng: 0x2545_F491, v: [0.0; 3], last_sensor: r, keyframes: Vec::new(), last_kf: 0, next_id: 0, last_t: f64::NAN, frame_dt: FRAME_S, motion: Vec::new(), metres_per_unit: None, imu_lag_ms: None, stash: Vec::new(), reseeds: 0, merges: 0, matched_born: Vec::new() }
     }
 
     /// Frames per 30 fps frame (1 at 30 fps, 2 at 60): frame-count thresholds are multiplied by it.
@@ -250,6 +252,7 @@ impl Slam {
         for (&(mi, _), &ok) in matches.iter().zip(&inl) {
             is_inlier[mi] = ok;
         }
+        self.matched_born = matches.iter().zip(&inl).map(|(&(mi, _), &ok)| (self.map[mi].born, ok)).collect();
         for &(mi, g) in guided.iter().filter(|&&(mi, _)| self.frame - self.map[mi].born >= OLD) {
             let b = match g {
                 Guided::NoKeypoint => 0,

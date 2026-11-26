@@ -26,15 +26,19 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: `12-43-04` height drift (z 0.93 → 1.23 forward, correlation 0.77 with pitch) has no anchor.
+  - `WEBAR_REPLAY_BORN=n` prints inliers by map point age. Points from before frame 100 carry the pose until ~130, then leave the view (≤ 20 matched from frame 160, 0 by 280), while z climbs on points seeded during the walk. On new floor the height is set by fresh seeds only, so height (= scale, since the unit is the camera height) drifts.
+  - Not FOV: 64° cuts this take's spread 0.35 → 0.25 but doubles it on `10-43-54`. Not pitch bias: ±2–4° makes no consistent change. The IMU vertical motion correlates only 0.39 with the visual height, so part may be a real lift.
+  - Next candidate: hold scale with the IMU metric estimate (now within 8% on walks), since scale drift and height drift are the same error here.
 - 2026-11-26: Replay yardstick, then two measured changes.
   - Tooling:
     - `WEBAR_REPLAY_SEED`, plus `scripts/replay-seeds.ps1`: 5 seeds × every recording, median [min..max]. A change counts only if a median clears the other run's range.
     - Forward-vs-backward pose gap per frame on frames Normal both ways (median, p95, max): consistency, which catches wrong poses.
     - "Too far" split by whether a keypoint lies within 3 px of the projection.
-  - Finding: under 1% of "too far" outcomes have a keypoint at the spot. The corner was not re-detected there, so the descriptor is not the problem.
+  - Finding: under 1% of "too far" outcomes have their best-descriptor candidate within 3 px. That suggests the corner was not re-detected, but the test only checked the best candidate, not any keypoint, so it is not yet conclusive.
   - Frame-count thresholds (`REINIT_AFTER_LOST`, `KF_COOLDOWN`, miss counting) scale with the measured frame rate, so they keep their duration at 60 fps. 30 fps replays are identical under the same seed.
   - `MAX_MAP` 1500 → 3000: 1500 filled by frame 60 on the new 1.8 m walk `12-43-04`, which evicted the start area and drifted 0.5 on the way back.
-    - Closure medians fell 0.004–0.041 → 0.003–0.009, most outside the old range. Lost on `10-51-41` fell 102 [87..110] → 73 [64..89]. Others unchanged.
+    - Closure medians fell 0.004–0.041 → 0.003–0.009 on the other takes, most outside the old range; `12-43-04` itself unchanged. Lost on `10-51-41` fell 102 [87..110] → 73 [64..89]. Others unchanged.
     - Track max +0–40% (`12-43-04` 5.0 → 6.9 ms).
   - Rejected: `max_keypoints` 1000 (lost −10–25% on two takes, but wrong poses: gap max 0.13 → 1.2 on `10-44-12`, closure median 0.58 on `12-43-04`, track +50%). FAST minimum 5/4: no consistent change, more cost.
   - Still open: `12-43-04` height wanders 0.35 on every seed (0.93 → 1.20 forward), and 1 seed of 5 diverges (closure 0.47).

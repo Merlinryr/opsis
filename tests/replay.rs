@@ -112,6 +112,11 @@ fn replay() {
                 last = Some(s.c);
             }
         }
+        if let Some(cut) = env("WEBAR_REPLAY_BORN") {
+            // Matches by map point age: born before frame `cut` (slam frame count) vs after, inliers/all.
+            let c = |early: bool, inl: bool| s.matched_born.iter().filter(|&&(b, ok)| ((b as f32) < cut) == early && (!inl || ok)).count();
+            print!("born<{cut} {}/{} later {}/{} | ", c(true, true), c(true, false), c(false, true), c(false, false));
+        }
         println!(
             "{n:5}   {dir_mark} {:5} {:4}/{:<4} {:4} {threshold:3} {:4} {ms:8.2} {:5.2} {:5.2} {:5.2}",
             s.state as u8, s.inliers, s.matches, s.map_len(), kps.len(), s.c[0], s.c[1], s.c[2]
