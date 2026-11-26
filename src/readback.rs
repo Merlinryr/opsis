@@ -24,6 +24,11 @@ impl Level {
         Self { w: blurred.w, h: blurred.h, rgba }
     }
 
+    pub fn score_at(&self, x: usize, y: usize) -> u16 {
+        let p = &self.rgba[(y * self.w + x) * 4..];
+        p[0] as u16 | (p[1] as u16) << 8
+    }
+
     pub fn score(&self) -> Vec<u16> {
         self.rgba.chunks_exact(4).map(|p| p[0] as u16 | (p[1] as u16) << 8).collect()
     }
@@ -42,7 +47,7 @@ pub fn features(levels: &[Level], cfg: &FrontEnd, gravity_of: impl Fn(&Keypoint)
     let kps = levels
         .iter()
         .enumerate()
-        .flat_map(|(l, lv)| fast::level_keypoints(&lv.score(), lv.w, &lv.survivors(), l, cfg.scale))
+        .flat_map(|(l, lv)| fast::level_keypoints(|x, y| lv.score_at(x, y), &lv.survivors(), l, cfg.scale))
         .collect();
     let (w, h) = (levels[0].w, levels[0].h);
     let kps = fast::retain_best(kps, w, h, cfg.grid.0, cfg.grid.1, cfg.max_keypoints);

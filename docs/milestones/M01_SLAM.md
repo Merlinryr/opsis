@@ -26,6 +26,10 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: CPU per frame. Phone: copy 2.5 (page `drawImage`) + upload ~4 (`copyExternalImageToTexture`) + unpack 1.4 + track ~3 ms.
+  - Native profile of track's front-end half: descriptors 1.16, keypoint gathering 0.31, retain 0.17, blurred copy 0.15 ms; SLAM ~0.8 ms.
+  - Cuts, exact (same replay output under the same seed): descriptors skip per-sample clamping when the patch is inside the level, and keypoint extraction reads scores straight from the readback instead of building a full-image score map. Native track mean 2.57 → 2.38 ms (12-06-23). Parity PASS on desktop WebGL2 + WebGPU. Not timed on the phone.
+  - The rest of the CPU frame is browser work (copy + upload ~6.5 ms). The remaining code-side lever is a narrower readback, which cuts unpack.
 - 2026-11-26: Height path dependence. `WEBAR_REPLAY_REVERSE=1` starts the first pass from the last frame. The SUMMARY `zratio` is end/start z of the first pass, so forward × reverse = 1 for a real height change (5 seeds each).
   - `12-43-04`: 1.18–1.23 forward × 0.74–1.02 reverse ≈ 0.91–1.22 (median ~1.04). The rise is mostly real: the phone was lifted.
   - Most other walks drift upward in both directions: products 1.04–1.24 (`14-02-*`, `10-43-54`, `10-44-12`, `10-51-41`, `12-43-29`). `11-55-10` and `12-06-23` read 0.88–0.98. That is a systematic ~5–10% height (scale) creep per 10 s pass, and it is the target.

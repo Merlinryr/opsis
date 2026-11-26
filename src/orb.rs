@@ -74,10 +74,14 @@ pub fn centroid_angle(level: &Gray, x: f32, y: f32) -> f32 {
 pub fn describe(level: &Gray, pat: &[[i8; 4]; 256], x: f32, y: f32, angle: f32) -> Descriptor {
     let rot = angle - std::f32::consts::FRAC_PI_2;
     let (s, c) = rot.sin_cos();
+    // Pattern offsets stay within PATCH_RADIUS / sqrt 2 (+ rounding): patches clear of the edge skip the clamp.
+    let r = PATCH_RADIUS + 1.0;
+    let inside = x >= r && y >= r && x + r < level.w as f32 && y + r < level.h as f32;
     let px = |u: i8, v: i8| {
         let (u, v) = (u as f32, v as f32);
         // Truncating v + 0.5 = round() here (negatives clamp to 0 either way); round() is a libm call on wasm.
-        level.at((x + c * u - s * v + 0.5) as isize, (y + s * u + c * v + 0.5) as isize)
+        let (xi, yi) = ((x + c * u - s * v + 0.5) as isize, (y + s * u + c * v + 0.5) as isize);
+        if inside { level.data[yi as usize * level.w + xi as usize] } else { level.at(xi, yi) }
     };
     let mut d = [0u64; 4];
     for (i, p) in pat.iter().enumerate() {

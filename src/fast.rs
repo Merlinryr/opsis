@@ -91,8 +91,9 @@ fn parabola(a: f32, b: f32, c: f32) -> f32 {
 }
 
 /// Subpixel keypoints of one level from its score map and NMS survivors (CPU or GPU readback).
-pub fn level_keypoints(map: &[u16], w: usize, survivors: &[(usize, usize)], level: usize, scale: f32) -> Vec<Keypoint> {
-    let s = |x: usize, y: usize| map[y * w + x] as f32;
+/// `score(x, y)`: the FAST score map, read only around survivors.
+pub fn level_keypoints(score: impl Fn(usize, usize) -> u16, survivors: &[(usize, usize)], level: usize, scale: f32) -> Vec<Keypoint> {
+    let s = |x: usize, y: usize| score(x, y) as f32;
     let k = scale.powi(level as i32);
     survivors
         .iter()
@@ -103,7 +104,7 @@ pub fn level_keypoints(map: &[u16], w: usize, survivors: &[(usize, usize)], leve
                 x: (x as f32 + ox + 0.5) * k - 0.5,
                 y: (y as f32 + oy + 0.5) * k - 0.5,
                 level: level as u8,
-                score: map[y * w + x],
+                score: score(x, y),
             }
         })
         .collect()
@@ -116,7 +117,7 @@ pub fn detect(levels: &[Gray], scale: f32, t: u8, border: usize) -> Vec<Keypoint
         .enumerate()
         .flat_map(|(l, img)| {
             let map = score_map(img, t, border);
-            level_keypoints(&map, img.w, &nms(&map, img.w, img.h), l, scale)
+            level_keypoints(|x, y| map[y * img.w + x], &nms(&map, img.w, img.h), l, scale)
         })
         .collect()
 }
