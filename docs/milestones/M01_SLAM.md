@@ -8,18 +8,18 @@
 - Enables: [M00](M00_WEBAR_LIBRARY.md)
 
 ## Requirements
-- [ ] R1: Returns a 6-DoF camera pose every frame from camera + motion sensors.
+- [x] R1: Returns a 6-DoF camera pose every frame from camera + motion sensors (`Tracker.pose()` per frame in [camera.html](../../web/camera.html); position + yaw from vision, pitch/roll from the sensor; replays of 9 phone recordings, 2026-11-26).
 - [x] R2: Runs in the Rust/WASM core; GPU passes work on both WebGPU and WebGL.
-- [ ] R3: Reports tracking state (normal, limited, lost) each frame.
-- [ ] R4: Recovers tracking after loss when the camera returns to a mapped area.
-- [ ] R5: Meets the M00 fps budget: ≥ 30 fps on all supported devices, ≥ 60 fps on recent flagships.
+- [x] R3: Reports tracking state (normal, limited, lost) each frame (`State` in [slam.rs](../../src/slam.rs), on the HUD and in every replay line; leaving Lost takes Normal quality since 2026-11-26).
+- [x] R4: Recovers tracking after loss when the camera returns to a mapped area (covered-lens replay `10-44-12`: relocalizes at the origin, then a long loss re-seeds and merges back into the old map, closure 0.003; owner phone run 2026-11-26: losses on pans recover in place).
+- [ ] R5: Meets the M00 fps budget: ≥ 30 fps on all supported devices, ≥ 60 fps on recent flagships (_partial: 60.0 fps on iPhone 16e WebGPU, 2026-11-26; other devices not measured_).
 - [x] R6: Uses no GPL or non-commercial code ([licenses](../research/2026-11-24_WEBAR_LIBRARY_DESIGN.md#open-source-and-licenses)).
 
 ## Verification (built right)
 - [x] V1: Recorded-sequence test (`tests/replay.rs` on `recordings/`): pose error under a threshold (`WEBAR_REPLAY_MAX_ERR=0.15` on the `10-43-54` walk: closure 0.066, z spread 0.14, 2026-11-26).
 - [ ] V2: Same sequence gives matching poses with WebGPU forced off (WebGL path).
 - [x] V3: Occlude-then-uncover test: state goes lost → normal and pose snaps back (replays of 2 phone recordings, 2026-11-25).
-- [ ] V4: Frame-time benchmark on target devices meets R5.
+- [ ] V4: Frame-time benchmark on target devices meets R5 (_partial: iPhone 16e only, HUD fps 60.0_).
 - [x] V5: Dependency license audit (e.g. `cargo deny check licenses`) passes.
 
 ## Validation (built the right thing)
