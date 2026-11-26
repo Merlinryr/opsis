@@ -22,6 +22,7 @@
   const FOV = Number(params.get("fov") ?? 69); // degrees across the long side; tune until the grid holds when turning
   const DELAY = Number(params.get("delay") ?? 0); // ms the sensor leads the camera; tune until the grid holds when turning fast
   const RECORD = params.get("record") === "1"; // ?record=1: upload luma + sensor angles (server needs WEBAR_RECORD=1)
+  const REC_FRAMES = Number(params.get("frames") ?? 300); // ?frames=N: recording length (5 s at 60 fps by default; ~0.2 MB per frame)
   const LEVELS = Number(params.get("levels") ?? 0); // ?levels=n: diagnostic, pyramid levels (default 4)
   const VISION = params.get("vision") !== "0"; // ?vision=0: sensor rotation only, to tune fov and delay over a fixed grid
   const COLORS = ["#ff3b30", "#ffcc00", "#34c759", "#0a84ff"];
@@ -108,7 +109,7 @@
         const s = sensorOk ? sensorAt(want) : null;
         const m = motionAt(want);
         const t0 = performance.now(); // before the recording readback so `copy` stays the drawImage alone
-        if (RECORD && s && sent < 300) {
+        if (RECORD && s && sent < REC_FRAMES) {
           // Same integer luma as the GPU pass, so the replay sees exactly what the tracker saw.
           const rgba = work.getImageData(0, 0, w, h).data; // recording only: the tracker reads the canvas on the GPU
           const luma = new Uint8Array(w * h);
@@ -157,7 +158,7 @@
         emaMs = emaMs ? 0.9 * emaMs + 0.1 * ms : ms;
         emaFps = emaFps ? 0.9 * emaFps + 0.1 * (1000 / (t - last)) : 1000 / (t - last);
         last = t;
-        hud.textContent = `${tracker.backend()} ${w}x${h} fov ${FOV} delay ${DELAY} ${VISION ? "" : "SENSOR ONLY"}${RECORD ? ` REC ${acked}/300${failed ? ` FAILED ${failed}` : ""}` : ""}\n`
+        hud.textContent = `${tracker.backend()} ${w}x${h} fov ${FOV} delay ${DELAY} ${VISION ? "" : "SENSOR ONLY"}${RECORD ? ` REC ${acked}/${REC_FRAMES}${failed ? ` FAILED ${failed}` : ""}` : ""}\n`
           + `driver ${driver}  sensor age ${s ? (want - s.t).toFixed(0) : "-"} ms\n`
           + `keypoints ${kps.length / 4} (t ${tracker.threshold()})  detect ${emaMs.toFixed(1)} ms  fps ${emaFps.toFixed(1)}\n`
           + `copy ${emaSplit[0].toFixed(1)}  gpu enc ${emaSplit[1].toFixed(1)} wait ${emaSplit[2].toFixed(1)}  track ${emaSplit[3].toFixed(1)} ms\n`
