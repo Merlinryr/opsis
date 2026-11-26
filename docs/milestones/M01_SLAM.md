@@ -26,6 +26,11 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Phone wait split (iPhone 16e, WebGPU 360x640), reading wait = gpu + map + unpack + rest:
+  - `?levels=1`: 8.1 = 3.5 + 0.0 + 0.5 + 4.1.
+  - `?levels=4`: 11.9 = 6.5 + 0.0 + 1.4 + 4.0.
+  - The ~4 ms rest is fixed: `wait` also times `upload_canvas` (`copyExternalImageToTexture` from the canvas, `web.rs` t0 sits before it). With the page's `drawImage` (copy 2.5), getting the frame in costs ~6.5 ms, as much as all GPU passes at 4 levels. Levels 1–3 add 3 ms of GPU. Map is free.
+  - Next candidate: import the video frame directly (`importExternalTexture`, scaled in the luma pass), dropping both copies. That touches the recorder (it reads the canvas) and needs a scaling that matches `drawImage`, or the recordings stop matching the live input.
 - 2026-11-26: Phone HUD after batching: copy 2.0, gpu enc 0.2, wait 10.1, track 2.5 ms. The old build's `gpu` was 10.9, so batching saved under 1 ms: detect is wait-bound.
   - Added a diagnostic: the HUD splits `wait` into `gpu` (submit → work done), `map` (→ buffers mapped) and `unpack`, plus a `?levels=n` param to see what scales with passes and readback size (~1.7 MB at 4 levels).
   - The row unpack now uses per-row `extend_from_slice`. Parity PASS on desktop WebGL2 + WebGPU.
