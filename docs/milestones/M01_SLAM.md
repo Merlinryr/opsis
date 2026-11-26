@@ -16,7 +16,7 @@
 - [x] R6: Uses no GPL or non-commercial code ([licenses](../research/2026-11-24_WEBAR_LIBRARY_DESIGN.md#open-source-and-licenses)).
 
 ## Verification (built right)
-- [ ] V1: Recorded-sequence test (`tests/replay.rs` on `recordings/`): pose error under a threshold (_open: needs a constant-height recording for z truth_).
+- [x] V1: Recorded-sequence test (`tests/replay.rs` on `recordings/`): pose error under a threshold (`WEBAR_REPLAY_MAX_ERR=0.15` on the `10-43-54` walk: closure 0.066, z spread 0.14, 2026-11-26).
 - [ ] V2: Same sequence gives matching poses with WebGPU forced off (WebGL path).
 - [x] V3: Occlude-then-uncover test: state goes lost → normal and pose snaps back (replays of 2 phone recordings, 2026-11-25).
 - [ ] V4: Frame-time benchmark on target devices meets R5.
@@ -26,6 +26,7 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: V1 closed. `WEBAR_REPLAY_MAX_ERR=m` fails the replay if the closure gap or forward z spread exceeds m (units: camera height = 1). Walk `10-43-54` passes at 0.15. Covered-lens `10-44-12` fails it on z spread 0.21 (not a constant-height take). Recordings are gitignored, so this runs locally only.
 - 2026-11-26: Replays of the two new IMU recordings on 422e6fb.
   - `10-43-54` (walk): 574/599 Normal, lost 4, z 0.94–1.09, closure 0.044 (0.9% of a 5.1 m path), track mean 3.9 / max 7.3 ms.
   - `10-44-12` (covered lens): forward pass gets lost at ~70–160, then relocalizes back to the origin (R4/V3 hold). A second cover at ~230 runs across the turnaround: about 100 lost frames, which triggers the floor re-seed (map 1148 → 322). That moves the origin by ~1 m in y, giving closure 1.016. The Limited frames before the re-seed report garbage poses (up to y −7.8).

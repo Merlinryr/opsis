@@ -4,6 +4,8 @@
 //! WEBAR_REPLAY_FOV overrides the recorded field of view (to compare FOV guesses offline).
 //! WEBAR_REPLAY_END keeps only the first N frames (to cut a bad tail).
 //! WEBAR_REPLAY_OCCLUDE=a..b blacks out forward frames a..b-1 (M01 V3: lost, then recovery on uncover).
+//! WEBAR_REPLAY_MAX_ERR=m fails the test if the closure gap or the forward z spread (max - min, true height
+//! is constant on a walk) exceeds m units (M01 V1 pass/fail).
 //! The frames play forward then backward, and the pose at the first tracked frame is compared on both
 //! passes. Closure only: errors symmetric in both directions (FOV, scale) cancel, and the way back
 //! re-tracks the forward map. The forward z range (true height is constant) catches some of those.
@@ -118,4 +120,7 @@ fn replay() {
         }
     }
     println!("forward path {path:.2} | closure gap {gap:.3} ({:.1}% of path) | forward z {:.2}..{:.2}", 100.0 * gap / path.max(1e-6), zr.0, zr.1);
+    if let Some(m) = env("WEBAR_REPLAY_MAX_ERR") {
+        assert!(gap <= m && zr.1 - zr.0 <= m, "pose error over {m}: closure {gap:.3}, z spread {:.3}", zr.1 - zr.0);
+    }
 }
