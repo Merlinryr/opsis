@@ -5,7 +5,7 @@ use crate::fast;
 use crate::gpu::{Gpu, Pass};
 use crate::image::{self, Gray};
 use crate::orb::{BORDER, hamming};
-use crate::geom::{camera_from_orientation, camera_in_device, mulv, transpose};
+use crate::geom::{accel_in_camera, camera_from_orientation};
 use crate::readback::{self, Level};
 use crate::slam::{Intrinsics, Slam};
 use std::cell::{Cell, RefCell};
@@ -207,7 +207,7 @@ impl Tracker {
                 *slam = None;
             }
             let slam = (!alpha.is_nan()).then(|| slam.get_or_insert_with(|| Slam::new(k)));
-            let accel = (!ax.is_nan()).then(|| mulv(&transpose(&camera_in_device(screen)), [ax, ay, az]));
+            let accel = (!ax.is_nan()).then(|| accel_in_camera([ax, ay, az], screen));
             crate::track(&levels, &mut cfg, slam, &sensor, t, accel, vision)
         };
         self.split_ms.set([encode, t1 - t0 - encode, js_sys::Date::now() - t1]);

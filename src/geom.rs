@@ -58,6 +58,13 @@ pub fn camera_in_device(screen_deg: f32) -> M3 {
     mul(&rot_z(screen_deg.to_radians()), &[[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
 }
 
+/// `devicemotion.acceleration` (m/s^2, device axes) in camera axes. Negated: on the iPhone it correlates
+/// with the visual acceleration at r -0.1..0 as given and 0.43-0.57 negated (two walk replays, 2026-11-26).
+// shortcut: the sign is checked on iOS only; check an Android recording before shipping there.
+pub fn accel_in_camera(a: V3, screen_deg: f32) -> V3 {
+    scale(mulv(&transpose(&camera_in_device(screen_deg)), a), -1.0)
+}
+
 /// Camera-to-world rotation from W3C `deviceorientation` angles (degrees) and the screen angle.
 /// Device frame to world is R = Rz(alpha) Rx(beta) Ry(gamma); the back camera flips y and z.
 pub fn camera_from_orientation(alpha: f32, beta: f32, gamma: f32, screen_deg: f32) -> M3 {

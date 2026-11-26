@@ -10,7 +10,7 @@
 //! passes. Closure only: errors symmetric in both directions (FOV, scale) cancel, and the way back
 //! re-tracks the forward map. The forward z range (true height is constant) catches some of those.
 use std::time::Instant;
-use webar::geom::{camera_from_orientation, camera_in_device, mulv, transpose};
+use webar::geom::{accel_in_camera, camera_from_orientation};
 use webar::image::{Gray, pyramid};
 use webar::orb::BORDER;
 use webar::slam::{Intrinsics, Slam, State};
@@ -72,7 +72,7 @@ fn replay() {
         // Optional columns: capture time (ms), then gravity-free device acceleration (recordings since IMU capture).
         let t = r.get(7).map_or(f64::NAN, |&t| t as f64);
         // shortcut: recordings are portrait (screen angle 0); record the angle if landscape replays are needed.
-        let accel = r.get(8..11).map(|a| mulv(&transpose(&camera_in_device(0.0)), [a[0], a[1], a[2]])).filter(|a| a.iter().all(|v| v.is_finite()));
+        let accel = r.get(8..11).map(|a| accel_in_camera([a[0], a[1], a[2]], 0.0)).filter(|a| a.iter().all(|v| v.is_finite()));
         let kps = track(&rb, &mut cfg, Some(s), &camera_from_orientation(r[3], r[4], r[5], 0.0), t, accel, true);
         let ms = t0.elapsed().as_secs_f64() * 1e3;
         (ms_sum, ms_max) = (ms_sum + ms, ms_max.max(ms));
@@ -102,7 +102,7 @@ fn replay() {
     let (a, b) = back.expect("start frame not tracked on the way back");
     let gap = (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f32>().sqrt();
     println!("\nframes {} | init {} normal {} limited {} lost {}", order.len(), states[0], states[1], states[2], states[3]);
-    if let Some(s) = &slam { println!("re-seeds {} | stash merges {}", s.reseeds, s.merges); }
+    if let Some(s) = &slam { println!("re-seeds {} | stash merges {} | scale {:?} m/unit, imu lag {:?} ms", s.reseeds, s.merges, s.metres_per_unit, s.imu_lag_ms); }
     println!("track (front-end CPU half + SLAM) mean {:.2} ms, max {ms_max:.2} ms", ms_sum / order.len() as f64);
     let o = slam.as_ref().map_or([0; 5], |s| s.old);
     println!("old points in view (>= 50 frames): {} | no keypoint {} | too far {} | ambiguous {} | outlier {} | inlier {}", o.iter().sum::<u32>(), o[0], o[1], o[2], o[3], o[4]);

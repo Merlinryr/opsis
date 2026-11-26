@@ -26,6 +26,11 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Metric scale never converged (HUD `scale -`): visual and IMU accelerations correlated at r -0.4..0.03. An offline search over axis permutations and signs on the walk replays found the iPhone reports `devicemotion.acceleration` negated (r 0.57 / 0.43 at lag 0–1 frame).
+  - Fix: one shared `geom::accel_in_camera`, used by the page and the replay, negates it.
+  - Scale now converges on 3 of 4 IMU recordings: `12-06-23` 1.78, `10-43-54` 1.46, `10-51-41` 1.72 m/unit (unit = camera height at seed), IMU lag 0–33 ms. `11-55-10` (cover + pans) has no estimate.
+  - Tracking unchanged: scale is reported only. Not validated against a true camera height. The estimators disagree on this data (aa/va 1.5–2.0 vs va/vv 0.3–0.65), so aa/va may read high.
+  - shortcut: sign checked on iOS only.
 - 2026-11-26: 60 fps target.
   - Phone frame work: copy 2.5 + upload ~4 + GPU ~6 + unpack 1.4 + track ~3 ms, run serially, about 17 ms.
   - The page now keeps two frames in flight. The next camera frame is drawn, uploaded and submitted while the previous one waits on the GPU, so frame time becomes max(CPU ~11, GPU ~6) instead of the sum. Each slot has its own canvas, so a frame shows the pixels it tracked. A frame is dropped when both slots are busy. The camera is asked for 60 fps (`frameRate: { ideal: 60 }`).
