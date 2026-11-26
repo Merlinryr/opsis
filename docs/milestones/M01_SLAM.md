@@ -26,6 +26,12 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Diagnostic build for the frame upload.
+  - wgpu 30 has no `importExternalTexture` on web (`create_external_texture` is `unimplemented!`), so the first try stays inside wgpu. `?src=video` copies the video element at native size (`copy_external_image_to_texture` / `texImage2D`, both backends), and the existing `Down` pass scales the luma to 360x640 (a 2x2 box at ratio 2).
+  - The HUD now times `upload` apart from `wait`, and splits wait into submit / gpu / map / unpack.
+  - `?fps=60` asks the camera for 60 fps.
+  - The display `drawImage` stays (the visible canvas needs the frame), so the possible saving is the ~4 ms upload, not 6.5 ms.
+  - Parity PASS on desktop WebGL2 + WebGPU, and both sources run on both backends with a 720x1280 test stream. **The recorder still reads the canvas:** don't record with `?src=video` until it reads the GPU luma.
 - 2026-11-26: Phone wait split (iPhone 16e, WebGPU 360x640), reading wait = gpu + map + unpack + rest:
   - `?levels=1`: 8.1 = 3.5 + 0.0 + 0.5 + 4.1.
   - `?levels=4`: 11.9 = 6.5 + 0.0 + 1.4 + 4.0.

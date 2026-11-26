@@ -190,6 +190,12 @@ impl Gpu for Gl {
         Ok(t)
     }
 
+    fn upload_video(&self, v: &web_sys::HtmlVideoElement) -> Result<Tex, JsValue> {
+        let t = self.texture(v.video_width() as usize, v.video_height() as usize, GL::RGBA8, GL::RGBA, None)?; // leaves it bound
+        self.gl.tex_sub_image_2d_with_u32_and_u32_and_html_video_element(GL::TEXTURE_2D, 0, 0, 0, GL::RGBA, GL::UNSIGNED_BYTE, v)?;
+        Ok(t)
+    }
+
     fn run(&self, pass: Pass, src: &Tex, src2: Option<&Tex>, w: usize, h: usize) -> Result<Tex, JsValue> {
         let gl = &self.gl;
         let out = self.texture(w, h, GL::RGBA8, GL::RGBA, None)?;
