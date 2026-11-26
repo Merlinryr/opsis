@@ -26,6 +26,26 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Replays of 422e6fb vs f0b8583, 3 seeds each. Only the two covered-lens recordings are still on disk (`14-02-15`, `14-02-35`); the corridor, room, grey and tilt runs are gone. They have no IMU columns, so scale isn't exercised.
+
+  | | f0b8583 | 422e6fb |
+  |---|---|---|
+  | Lost frames `14-02-15` (fwd + back, incl. cover) | 170 / 235 / 172 | 169 / 168 / 168 |
+  | Lost frames `14-02-35` | 154 / 155 / 154 | 150 / 150 / 150 |
+  | Uncover → Normal (`14-02-15` / `14-02-35`) | frame 203 / 198 (via Limited) | frame 199 / 192 (direct) |
+  | `track()` mean / max (native) | 3.1–4.0 / 6.1–11.3 ms | 2.0–2.4 / 3.9–5.6 ms |
+  | Old-point inliers | 44–66k | 53–79k (+20–27%) |
+  | Old-point ambiguous | 24–83k | 11–14k |
+  | Old-point "no keypoint" | 14–37k | 37–116k |
+  | Forward z range | 0.84–1.06 | 0.91–1.06 |
+  | Closure gap `14-02-35` | 0.003–0.012 | 0.021–0.034 |
+
+  - **Reading:**
+    - The seed no longer moves the outcome: the 235-lost / 0.32-closure seed of the old build is gone.
+    - Recovery is faster and skips Limited.
+    - `track()` is faster despite keyframes and BA, because the level filter cuts candidates. No keyframe spike shows in the max.
+  - **To watch:** "no keypoint" tripled, because the level filter now counts wrong-level candidates as none. Closure on `14-02-35` is slightly worse but still ≤ 1.1% of path.
+  - **Next:** new phone recordings with IMU (walk at constant height, sway for scale, covered lens), plus a grey-floor run to re-measure old-point re-matching.
 - 2026-11-25: Second build round, all in code. **Not validated: no replay or phone run (test later).**
   - **Time and IMU end to end:**
     - `update` takes the capture time and gravity-free acceleration. The page sends `devicemotion` and requests its permission on iOS.
