@@ -1,11 +1,11 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>webar parity</title>
+<title>opsis parity</title>
 <canvas id="gl" width="1" height="1" hidden></canvas>
 <p><a href="camera.html">Live camera view →</a></p>
 <pre id="out">running…</pre>
 <script type="module">
-  import init, { parity_webgl, parity_webgpu } from "../pkg/webar.js";
+  import init, { parity_webgl, parity_webgpu } from "../pkg/opsis.js";
   const out = document.getElementById("out");
   const run = async (name, f) => {
     try { return await f(); } catch (e) { return `FAIL ${name}\nerror: ${e}`; }

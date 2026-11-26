@@ -1,9 +1,7 @@
-//! FAST-9 corner score, 3x3 NMS, quadratic subpixel and spatial binning.
 //! Method: Rosten & Drummond, "Machine learning for high-speed corner detection", ECCV 2006.
 
 use crate::image::Gray;
 
-/// Bresenham circle of radius 3, clockwise from 12 o'clock.
 pub const RING: [(isize, isize); 16] = [
     (0, -3), (1, -3), (2, -2), (3, -1), (3, 0), (3, 1), (2, 2), (1, 3),
     (0, 3), (-1, 3), (-2, 2), (-3, 1), (-3, 0), (-3, -1), (-2, -2), (-1, -3),
@@ -18,7 +16,6 @@ pub struct Keypoint {
     pub score: u16,
 }
 
-/// True if `mask` (16 ring bits) holds 9 contiguous set bits, wrapping around.
 fn has_arc9(mask: u32) -> bool {
     let m = mask | (mask << 16);
     (0..9).fold(m, |acc, i| acc & (m >> i)) != 0
@@ -49,7 +46,6 @@ pub fn score(img: &Gray, x: isize, y: isize, t: u8) -> u16 {
     s.min(u16::MAX as i32) as u16
 }
 
-/// Full score map; pixels within `border` stay 0.
 pub fn score_map(img: &Gray, t: u8, border: usize) -> Vec<u16> {
     let mut out = vec![0; img.w * img.h];
     for y in border..img.h.saturating_sub(border) {
@@ -84,14 +80,11 @@ pub fn nms(map: &[u16], w: usize, h: usize) -> Vec<(usize, usize)> {
     out
 }
 
-/// Vertex offset of a parabola through (-1, a), (0, b), (1, c), in [-0.5, 0.5].
 fn parabola(a: f32, b: f32, c: f32) -> f32 {
     let den = a - 2.0 * b + c;
     if den >= 0.0 { 0.0 } else { (0.5 * (a - c) / den).clamp(-0.5, 0.5) }
 }
 
-/// Subpixel keypoints of one level from its score map and NMS survivors (CPU or GPU readback).
-/// `score(x, y)`: the FAST score map, read only around survivors.
 pub fn level_keypoints(score: impl Fn(usize, usize) -> u16, survivors: &[(usize, usize)], level: usize, scale: f32) -> Vec<Keypoint> {
     let s = |x: usize, y: usize| score(x, y) as f32;
     let k = scale.powi(level as i32);
@@ -110,7 +103,6 @@ pub fn level_keypoints(score: impl Fn(usize, usize) -> u16, survivors: &[(usize,
         .collect()
 }
 
-/// Detect on every pyramid level; coordinates are mapped to level 0.
 pub fn detect(levels: &[Gray], scale: f32, t: u8, border: usize) -> Vec<Keypoint> {
     levels
         .iter()
@@ -122,7 +114,6 @@ pub fn detect(levels: &[Gray], scale: f32, t: u8, border: usize) -> Vec<Keypoint
         .collect()
 }
 
-/// Keep at most `max` keypoints, spread over a `gx` x `gy` grid of the `w` x `h` level-0 image.
 pub fn retain_best(mut kps: Vec<Keypoint>, w: usize, h: usize, gx: usize, gy: usize, max: usize) -> Vec<Keypoint> {
     let cell = |k: &Keypoint| {
         let cx = ((k.x.max(0.0) as usize) * gx / w).min(gx - 1);
@@ -144,7 +135,6 @@ pub fn retain_best(mut kps: Vec<Keypoint>, w: usize, h: usize, gx: usize, gy: us
 mod tests {
     use super::*;
 
-    /// Black image with a white square; its corners are FAST corners.
     fn square() -> Gray {
         let mut g = Gray::new(64, 64);
         for y in 20..44 {
@@ -202,7 +192,6 @@ mod tests {
 mod line_tests {
     use super::*;
 
-    /// FAST-9 must not fire on thin straight lines (tile grout), whatever their slant.
     #[test]
     fn no_corners_on_thin_lines() {
         for slope in [0.0f32, 0.05, 0.1, 0.2, 0.4] {

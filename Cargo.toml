@@ -1,22 +1,12 @@
-[package]
-name = "webar"
+[workspace]
+members = ["crates/core", "crates/wasm"]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 publish = false
 license = "LicenseRef-Proprietary"
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "=0.2.130"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-wgpu = { version = "=30.0.2", default-features = false, features = ["webgpu", "wgsl"] }
-web-sys = { version = "0.3", features = [
-    "HtmlCanvasElement", "WebGl2RenderingContext", "WebGlProgram", "WebGlShader",
-    "WebGlTexture", "OffscreenCanvas", "OffscreenCanvasRenderingContext2d", "ImageData", "WebGlFramebuffer", "WebGlUniformLocation",
-] }
 
 [profile.release]
 opt-level = 3 # 2.3x faster track() than "z" (replay 5.4 -> 2.4 ms) for +6.5 KB gzip

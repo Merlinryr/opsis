@@ -1,4 +1,3 @@
-//! GPU readback format and the CPU half of the front end that consumes it.
 //! Pure code (no web APIs), so it is host-tested and shared by both GPU backends.
 
 use crate::FrontEnd;
@@ -6,7 +5,6 @@ use crate::fast::{self, Keypoint};
 use crate::image::Gray;
 use crate::orb::{self, Descriptor};
 
-/// One pyramid level read back from the GPU.
 /// RGBA per pixel = (score lo, score hi, NMS survivor flag, blurred luma).
 pub struct Level {
     pub w: usize,
@@ -15,7 +13,6 @@ pub struct Level {
 }
 
 impl Level {
-    /// Same layout from CPU results, for tests and as the reference.
     pub fn from_cpu(score: &[u16], survivors: &[(usize, usize)], blurred: &Gray) -> Self {
         let mut rgba: Vec<u8> = score.iter().zip(&blurred.data).flat_map(|(s, b)| [*s as u8, (*s >> 8) as u8, 0, *b]).collect();
         for &(x, y) in survivors {
@@ -42,7 +39,6 @@ impl Level {
     }
 }
 
-/// Keypoints (best `max_keypoints`, spread over the grid) and their descriptors.
 pub fn features(levels: &[Level], cfg: &FrontEnd, gravity_of: impl Fn(&Keypoint) -> Option<f32>) -> (Vec<Keypoint>, Vec<Descriptor>) {
     let kps = levels
         .iter()
@@ -56,7 +52,6 @@ pub fn features(levels: &[Level], cfg: &FrontEnd, gravity_of: impl Fn(&Keypoint)
     (kps, desc)
 }
 
-/// CPU reference for the whole GPU front end: same readback layout from CPU passes.
 pub fn cpu_levels(levels: &[Gray], cfg: &FrontEnd, border: usize) -> Vec<Level> {
     levels
         .iter()

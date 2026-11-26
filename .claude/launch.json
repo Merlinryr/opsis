@@ -4,7 +4,7 @@
     {
       "name": "web",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["web/serve.mjs"],
+      "runtimeArgs": ["tools/serve.mjs"],
       "port": 8080
     }
   ]

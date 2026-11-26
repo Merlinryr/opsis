@@ -1,4 +1,3 @@
-//! Tiny 3D math: row-major 3x3 matrices, sensor orientation, small dense solve.
 //! World frame = W3C DeviceOrientation earth frame: x east, y north, z up.
 //! Camera frame = computer vision: x right, y down, z forward (out of the back camera).
 
@@ -65,7 +64,6 @@ pub fn accel_in_camera(a: V3, screen_deg: f32) -> V3 {
     scale(mulv(&transpose(&camera_in_device(screen_deg)), a), -1.0)
 }
 
-/// Camera-to-world rotation from W3C `deviceorientation` angles (degrees) and the screen angle.
 /// Device frame to world is R = Rz(alpha) Rx(beta) Ry(gamma); the back camera flips y and z.
 pub fn camera_from_orientation(alpha: f32, beta: f32, gamma: f32, screen_deg: f32) -> M3 {
     let r = mul(&mul(&rot_z(alpha.to_radians()), &rot_x(beta.to_radians())), &rot_y(gamma.to_radians()));
@@ -79,7 +77,7 @@ pub fn triangulate(c1: V3, d1: V3, c2: V3, d2: V3) -> Option<V3> {
     let b = dot(d1, d2);
     let den = 1.0 - b * b;
     if den < 1e-6 {
-        return None; // parallel rays
+        return None;
     }
     let s = (b * dot(d2, w) - dot(d1, w)) / den;
     let t = dot(d2, w) + s * b;
@@ -87,7 +85,6 @@ pub fn triangulate(c1: V3, d1: V3, c2: V3, d2: V3) -> Option<V3> {
     (s > 0.0 && t > 0.0 && norm(sub(p1, p2)) < 0.02 * s.min(t)).then(|| scale(add(p1, p2), 0.5))
 }
 
-/// Solve the N x N system `a x = b` by Gaussian elimination with partial pivoting.
 pub fn solve<const N: usize>(mut a: [[f32; N]; N], mut b: [f32; N]) -> Option<[f32; N]> {
     for c in 0..N {
         let p = (c..N).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs()))?;
@@ -119,7 +116,6 @@ mod tests {
         norm(sub(a, b)) < 1e-5
     }
 
-    /// Gravity (world -z) seen in camera axes.
     fn gravity_in_camera(alpha: f32, beta: f32, gamma: f32) -> V3 {
         mulv(&transpose(&camera_from_orientation(alpha, beta, gamma, 0.0)), [0.0, 0.0, -1.0])
     }

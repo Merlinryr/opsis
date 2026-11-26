@@ -2,7 +2,7 @@
 //! Same fragment passes as `webgl`, written in WGSL; parity tests guard drift between the two.
 
 use crate::gpu::{Gpu, Pass};
-use crate::image::Gray;
+use opsis_core::image::Gray;
 use wasm_bindgen::JsValue;
 use std::cell::RefCell;
 use std::rc::Rc;

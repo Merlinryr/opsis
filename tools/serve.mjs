@@ -1,15 +1,15 @@
-// Dev static server: only /web and /pkg (it may be exposed through a public tunnel). Sends COOP/COEP so wasm threads can be tested later.
-// With WEBAR_RECORD=1 it also accepts POST /rec frames from camera.html?record=1 into recordings/<session>/ (see M01 V1 replay).
+// Dev static server: only /examples and /pkg (it may be exposed through a public tunnel). Sends COOP/COEP so wasm threads can be tested later.
+// With OPSIS_RECORD=1 it also accepts POST /rec frames from camera.html?record=1 into recordings/<session>/ (see M01 V1 replay).
 import { createServer } from "node:http";
 import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 
 const root = normalize(join(import.meta.dirname, ".."));
-const allowed = ["web", "pkg"].map((d) => join(root, d) + sep);
+const allowed = ["examples", "pkg"].map((d) => join(root, d) + sep);
 const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };
 const port = Number(process.env.PORT ?? 8081);
 
-const RECORD = process.env.WEBAR_RECORD === "1";
+const RECORD = process.env.OPSIS_RECORD === "1";
 const MAX_FRAMES = 300; // per recording: ~10 s at 30 fps
 const MAX_TOTAL = 3 * MAX_FRAMES; // per server run (public tunnel: bounds disk use)
 const MAX_PIXELS = 1280 * 1280;
@@ -67,4 +67,4 @@ createServer(async (req, res) => {
   } catch {
     res.writeHead(404).end();
   }
-}).listen(port, "127.0.0.1", () => console.log(`serving ${root} on http://localhost:${port}/web/${RECORD ? ` (recording to recordings/)` : ""}`));
+}).listen(port, "127.0.0.1", () => console.log(`serving ${root} on http://localhost:${port}/examples/${RECORD ? ` (recording to recordings/)` : ""}`));

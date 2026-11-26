@@ -8,7 +8,7 @@ $exe = Get-ChildItem target\release\build -Recurse -Filter "replay-*.exe" | Sort
 $keys = "lost", "limited", "closure", "zspread", "gapmed", "gap95", "gapmax", "ms", "msmax"
 foreach ($rec in Get-ChildItem recordings -Directory | Sort-Object Name) {
     $runs = 1..$Seeds | ForEach-Object {
-        $env:WEBAR_REPLAY = $rec.FullName; $env:WEBAR_REPLAY_SEED = $_
+        $env:OPSIS_REPLAY = $rec.FullName; $env:OPSIS_REPLAY_SEED = $_
         $line = & $exe.FullName --ignored --nocapture 2>$null | Select-String "^SUMMARY"
         $v = @{}; ($line -replace "^SUMMARY ", "") -split " " | ForEach-Object -Begin { $k = $null } -Process { if ($k) { $v[$k] = [double]$_; $k = $null } else { $k = $_ } }
         $v
@@ -19,4 +19,4 @@ foreach ($rec in Get-ChildItem recordings -Directory | Sort-Object Name) {
     }
     "{0}  {1}" -f $rec.Name.Substring(11, 8), ($cols -join "  ")
 }
-Remove-Item Env:WEBAR_REPLAY, Env:WEBAR_REPLAY_SEED
+Remove-Item Env:OPSIS_REPLAY, Env:OPSIS_REPLAY_SEED

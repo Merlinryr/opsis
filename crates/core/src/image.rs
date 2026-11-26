@@ -1,5 +1,3 @@
-//! Grayscale images, luma conversion, blur and pyramid.
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gray {
     pub w: usize,
@@ -48,12 +46,10 @@ pub fn blur(img: &Gray) -> Gray {
     pass(&pass(img, 1, 0), 0, 1)
 }
 
-/// Size of the next pyramid level.
 pub fn next_size(w: usize, h: usize, scale: f32) -> (usize, usize) {
     (((w as f32 / scale).round() as usize).max(1), ((h as f32 / scale).round() as usize).max(1))
 }
 
-/// Bilinear resample of a blurred image to `1/scale` size.
 pub fn downscale(img: &Gray, scale: f32) -> Gray {
     let (w, h) = next_size(img.w, img.h, scale);
     let mut out = Gray::new(w, h);
@@ -75,7 +71,6 @@ pub fn downscale(img: &Gray, scale: f32) -> Gray {
     out
 }
 
-/// Level 0 is the input; each next level is blurred then shrunk by `scale`.
 pub fn pyramid(img: Gray, levels: usize, scale: f32) -> Vec<Gray> {
     let mut out = vec![img];
     for _ in 1..levels {

@@ -5,7 +5,6 @@
 
 use crate::geom::{V3, add, dot, scale, sub};
 
-/// Moving average over `2r + 1` samples (edges shrink): the low-pass before differencing.
 fn smooth(x: &[V3], r: usize) -> Vec<V3> {
     (0..x.len())
         .map(|i| {
@@ -15,7 +14,6 @@ fn smooth(x: &[V3], r: usize) -> Vec<V3> {
         .collect()
 }
 
-/// Central second difference of uniformly sampled positions (`dt` seconds apart).
 fn accel(p: &[V3], dt: f32) -> Vec<V3> {
     (1..p.len().saturating_sub(1)).map(|i| scale(add(sub(p[i + 1], p[i]), sub(p[i - 1], p[i])), 1.0 / (dt * dt))).collect()
 }
@@ -60,7 +58,6 @@ pub fn scale_and_lag(p: &[V3], imu: &[V3], dt: f32, max_lag: usize) -> Option<(i
 mod tests {
     use super::*;
 
-    /// Side-to-side sway in map units; the IMU sees it at 1.4 m per unit, 3 frames late, with noise.
     #[test]
     fn recovers_scale_and_lag() {
         let (dt, s_true, lag_true) = (1.0 / 30.0, 1.4f32, 3isize);

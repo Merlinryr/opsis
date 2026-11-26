@@ -2,7 +2,7 @@
 //! RGBA8 targets only (float targets need an extension phones may lack).
 
 use crate::gpu::{Gpu, Pass};
-use crate::image::Gray;
+use opsis_core::image::Gray;
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::{JsCast, JsValue};
@@ -92,7 +92,6 @@ pub struct Tex {
     pool: Pool,
 }
 
-/// Textures freed by dropped `Tex`es (texture, w, h, internal format), reused instead of reallocated.
 type Pool = Rc<RefCell<Vec<(WebGlTexture, usize, usize, u32)>>>;
 const POOL_MAX: usize = 64; // beyond this (sizes from an old screen orientation) the oldest are freed
 
@@ -185,7 +184,7 @@ impl Gpu for Gl {
     }
 
     fn upload_canvas(&self, c: &OffscreenCanvas) -> Result<Tex, JsValue> {
-        let t = self.texture(c.width() as usize, c.height() as usize, GL::RGBA8, GL::RGBA, None)?; // leaves it bound
+        let t = self.texture(c.width() as usize, c.height() as usize, GL::RGBA8, GL::RGBA, None)?;
         self.gl.tex_sub_image_2d_with_u32_and_u32_and_offscreen_canvas(GL::TEXTURE_2D, 0, 0, 0, GL::RGBA, GL::UNSIGNED_BYTE, c)?; // same size: no reallocation
         Ok(t)
     }

@@ -1,45 +1,46 @@
-//! Replays a phone recording (camera.html?record=1, server started with WEBAR_RECORD=1)
+//! Replays a phone recording (camera.html?record=1, server started with OPSIS_RECORD=1)
 //! through the CPU front end and the same `track()` the browser uses. M01 V1.
-//!   $env:WEBAR_REPLAY="recordings/<session>"; cargo test --release --test replay -- --ignored --nocapture
-//! WEBAR_REPLAY_FOV overrides the recorded field of view (to compare FOV guesses offline).
-//! WEBAR_REPLAY_END keeps only the first N frames (to cut a bad tail).
-//! WEBAR_REPLAY_OCCLUDE=a..b blacks out forward frames a..b-1 (M01 V3: lost, then recovery on uncover).
-//! WEBAR_REPLAY_SEED=n sets the RANSAC seed (judge a change over several: `scripts/replay-seeds.ps1`).
-//! WEBAR_REPLAY_MAX_ERR=m fails the test if the closure gap or the forward z spread (max - min, true height
+//!   $env:OPSIS_REPLAY="recordings/<session>"; cargo test --release --test replay -- --ignored --nocapture
+//! OPSIS_REPLAY_FOV overrides the recorded field of view (to compare FOV guesses offline).
+//! OPSIS_REPLAY_END keeps only the first N frames (to cut a bad tail).
+//! OPSIS_REPLAY_OCCLUDE=a..b blacks out forward frames a..b-1 (M01 V3: lost, then recovery on uncover).
+//! OPSIS_REPLAY_SEED=n sets the RANSAC seed (judge a change over several: `tools/replay-seeds.ps1`).
+//! OPSIS_REPLAY_MAX_ERR=m fails the test if the closure gap or the forward z spread (max - min, true height
 //! is constant on a walk) exceeds m units (M01 V1 pass/fail).
 //! The frames play forward then backward, and the pose at the first tracked frame is compared on both
 //! passes. Closure only: errors symmetric in both directions (FOV, scale) cancel, and the way back
 //! re-tracks the forward map. The forward z range (true height is constant) catches some of those.
 use std::time::Instant;
-use webar::geom::{accel_in_camera, camera_from_orientation};
-use webar::image::{Gray, pyramid};
-use webar::orb::BORDER;
-use webar::slam::{Intrinsics, Slam, State};
-use webar::{FrontEnd, readback, track};
+use opsis_core::geom::{accel_in_camera, camera_from_orientation};
+use opsis_core::image::{Gray, pyramid};
+use opsis_core::orb::BORDER;
+use opsis_core::slam::{Intrinsics, Slam, State};
+use opsis_core::{FrontEnd, readback, track};
 
 #[test]
-#[ignore = "needs WEBAR_REPLAY=<recording dir>"]
+#[ignore = "needs OPSIS_REPLAY=<recording dir>"]
 fn replay() {
-    let dir = std::path::PathBuf::from(std::env::var("WEBAR_REPLAY").expect("set WEBAR_REPLAY to a recordings/<session> dir"));
+    // Relative paths resolve from the repo root: cargo runs tests from the crate dir.
+    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join(std::env::var("OPSIS_REPLAY").expect("set OPSIS_REPLAY to a recordings/<session> dir"));
     let meta = std::fs::read_to_string(dir.join("meta.csv")).expect("meta.csv");
     // Columns: index, w, h, alpha, beta, gamma, fov[, capture time ms[, ax, ay, az]]. Recordings made before the
     // capture index was sent are in upload order, which can differ from capture order.
     let mut rows: Vec<Vec<f32>> = meta.lines().map(|l| l.split(',').map(|v| v.parse().unwrap()).collect()).collect();
     rows.sort_by(|a, b| a[0].total_cmp(&b[0]));
-    // WEBAR_REPLAY_REVERSE=1: the first pass runs from the last frame (fresh map there). Path dependence:
+    // OPSIS_REPLAY_REVERSE=1: the first pass runs from the last frame (fresh map there). Path dependence:
     // zratio (end/start z of the first pass) times the reverse run's zratio is 1 for real height changes.
-    if std::env::var("WEBAR_REPLAY_REVERSE").is_ok_and(|v| v == "1") {
+    if std::env::var("OPSIS_REPLAY_REVERSE").is_ok_and(|v| v == "1") {
         rows.reverse();
     }
     let env = |k: &str| std::env::var(k).ok().map(|v| v.parse::<f32>().expect(k));
-    rows.truncate(env("WEBAR_REPLAY_END").map_or(rows.len(), |n| n as usize));
-    let fov = env("WEBAR_REPLAY_FOV");
+    rows.truncate(env("OPSIS_REPLAY_END").map_or(rows.len(), |n| n as usize));
+    let fov = env("OPSIS_REPLAY_FOV");
     // Constant offset added to beta (degrees): offline sensor-pitch bias sweep.
     for r in rows.iter_mut() {
-        r[4] += env("WEBAR_REPLAY_PITCH").unwrap_or(0.0);
+        r[4] += env("OPSIS_REPLAY_PITCH").unwrap_or(0.0);
     }
     // Sensor angles taken `shift` frames later (interpolated; negative = earlier): offline sensor-delay sweep.
-    if let Some(shift) = env("WEBAR_REPLAY_SHIFT") {
+    if let Some(shift) = env("OPSIS_REPLAY_SHIFT") {
         let src = rows.clone();
         let wrap = |d: f32| (d + 540.0).rem_euclid(360.0) - 180.0; // alpha crosses 0/360
         for (n, r) in rows.iter_mut().enumerate() {
@@ -51,8 +52,8 @@ fn replay() {
             r[5] = a[5] + f * (b[5] - a[5]);
         }
     }
-    let occlude = std::env::var("WEBAR_REPLAY_OCCLUDE").ok().map(|v| {
-        let (a, b) = v.split_once("..").expect("WEBAR_REPLAY_OCCLUDE=a..b");
+    let occlude = std::env::var("OPSIS_REPLAY_OCCLUDE").ok().map(|v| {
+        let (a, b) = v.split_once("..").expect("OPSIS_REPLAY_OCCLUDE=a..b");
         a.parse::<usize>().unwrap()..b.parse::<usize>().unwrap()
     });
     assert!(occlude.as_ref().is_none_or(|o| rows.iter().any(|r| r[0] as usize >= o.end)), "occlusion window past the last frame");
@@ -66,7 +67,7 @@ fn replay() {
     // check, not accuracy (the way back re-tracks the forward map), but a wrong pose shows as a large gap.
     let mut fwd: Vec<Option<[f32; 3]>> = vec![None; rows.iter().map(|r| r[0] as usize + 1).max().unwrap_or(0)];
     let mut gaps: Vec<f32> = Vec::new();
-    let seed = std::env::var("WEBAR_REPLAY_SEED").ok().map(|v| v.parse::<u32>().expect("WEBAR_REPLAY_SEED"));
+    let seed = std::env::var("OPSIS_REPLAY_SEED").ok().map(|v| v.parse::<u32>().expect("OPSIS_REPLAY_SEED"));
     println!("frame dir state inl/match  map thr  kps  track_ms   x     y     z");
     let order: Vec<(&Vec<f32>, char)> = rows.iter().map(|r| (r, '>')).chain(rows.iter().rev().skip(1).map(|r| (r, '<'))).collect();
     for &(r, dir_mark) in &order {
@@ -117,7 +118,7 @@ fn replay() {
                 last = Some(s.c);
             }
         }
-        if let Some(cut) = env("WEBAR_REPLAY_BORN") {
+        if let Some(cut) = env("OPSIS_REPLAY_BORN") {
             // Matches by map point age: born before frame `cut` (slam frame count) vs after, inliers/all.
             let c = |early: bool, inl: bool| s.matched_born.iter().filter(|&&(b, ok)| ((b as f32) < cut) == early && (!inl || ok)).count();
             print!("born<{cut} {}/{} later {}/{} | ", c(true, true), c(true, false), c(false, true), c(false, false));
@@ -153,13 +154,13 @@ fn replay() {
     gaps.sort_by(f32::total_cmp);
     let q = |p: f32| gaps.get(((gaps.len() as f32 * p) as usize).min(gaps.len().saturating_sub(1))).copied().unwrap_or(f32::NAN);
     println!("fwd/back gap on {} frames Normal both ways: median {:.3} p95 {:.3} max {:.3}", gaps.len(), q(0.5), q(0.95), q(1.0));
-    // One line per run for scripts/replay-seeds.ps1.
+    // One line per run for tools/replay-seeds.ps1.
     let zratio = match (start, last) {
         (Some((_, a)), Some(b)) => b[2] / a[2],
         _ => f32::NAN,
     };
     println!("SUMMARY lost {} limited {} closure {gap:.3} zratio {zratio:.3} zspread {:.3} gapmed {:.3} gap95 {:.3} gapmax {:.3} ms {:.2} msmax {ms_max:.2}", states[3], states[2], zr.1 - zr.0, q(0.5), q(0.95), q(1.0), ms_sum / order.len() as f64);
-    if let Some(m) = env("WEBAR_REPLAY_MAX_ERR") {
+    if let Some(m) = env("OPSIS_REPLAY_MAX_ERR") {
         assert!(gap <= m && zr.1 - zr.0 <= m, "pose error over {m}: closure {gap:.3}, z spread {:.3}", zr.1 - zr.0);
     }
 }

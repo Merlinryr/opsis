@@ -5,7 +5,7 @@
 
 ## Relations
 - Depends on: none
-- Enables: [M00](M00_WEBAR_LIBRARY.md)
+- Enables: [M02](M02_SDK.md), [M00](M00_WEBAR_LIBRARY.md)
 
 ## Requirements
 - [x] R1: Returns a 6-DoF camera pose every frame from camera + motion sensors (`Tracker.pose()` per frame in [camera.html](../../web/camera.html); position + yaw from vision, pitch/roll from the sensor; replays of 9 phone recordings, 2026-11-26).

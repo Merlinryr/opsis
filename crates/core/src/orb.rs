@@ -1,4 +1,3 @@
-//! Gravity-oriented BRIEF descriptors and Hamming matching.
 //! Method: Rublee et al., "ORB", ICCV 2011, with orientation taken from gravity
 //! projected into the image instead of the intensity centroid.
 
@@ -7,12 +6,10 @@ use crate::image::Gray;
 
 pub type Descriptor = [u64; 4];
 
-/// Patch radius; keypoints closer than this to a level border are dropped.
 pub const PATCH_RADIUS: f32 = 15.0;
 /// Detection border so every rotated test stays inside the level image.
 pub const BORDER: usize = 16;
 
-/// 256 test pairs (x1, y1, x2, y2), isotropic Gaussian, inside the patch disc.
 // shortcut: seeded pseudo-random pattern, not a learned one; tune distinctiveness in phase 5.
 pub fn pattern() -> [[i8; 4]; 256] {
     let mut s: u32 = 0x9E37_79B9;
@@ -35,8 +32,6 @@ pub fn pattern() -> [[i8; 4]; 256] {
     std::array::from_fn(|_| [gauss(), gauss(), gauss(), gauss()])
 }
 
-/// Image angle of gravity at pixel (x, y), from gravity `g` in camera axes
-/// (x right, y down, z forward) and pinhole intrinsics. Accounts for perspective.
 pub fn gravity_angle(x: f32, y: f32, g: [f32; 3], fx: f32, fy: f32, cx: f32, cy: f32) -> f32 {
     let dx = fx * g[0] + (cx - x) * g[2];
     let dy = fy * g[1] + (cy - y) * g[2];
@@ -52,7 +47,7 @@ pub fn centroid_angle(level: &Gray, x: f32, y: f32) -> f32 {
     let (mut m10, mut m01) = (0i64, 0i64);
     // Row by row over the disc: slices when inside (hot path, ~4x faster), clamped reads at borders.
     for v in -r..=r {
-        let du = ((r * r - v * v) as f32).sqrt() as isize; // widest |u| with u² + v² <= r²
+        let du = ((r * r - v * v) as f32).sqrt() as isize;
         let (mut sum, mut usum) = (0i64, 0i64);
         if inside {
             let start = ((cy + v) as usize) * level.w + (cx - du) as usize;
@@ -70,7 +65,6 @@ pub fn centroid_angle(level: &Gray, x: f32, y: f32) -> f32 {
     (m01 as f32).atan2(m10 as f32)
 }
 
-/// Descriptor at (x, y) on its level, with the pattern rotated so direction `angle` maps to +y.
 pub fn describe(level: &Gray, pat: &[[i8; 4]; 256], x: f32, y: f32, angle: f32) -> Descriptor {
     let rot = angle - std::f32::consts::FRAC_PI_2;
     let (s, c) = rot.sin_cos();
@@ -92,8 +86,6 @@ pub fn describe(level: &Gray, pat: &[[i8; 4]; 256], x: f32, y: f32, angle: f32) 
     d
 }
 
-/// Describe keypoints on their own (blurred) pyramid level. `gravity_of` returns the
-/// gravity angle for a level-0 keypoint, or `None` to fall back to the intensity centroid.
 pub fn describe_all(blurred: &[Gray], scale: f32, kps: &[Keypoint], gravity_of: impl Fn(&Keypoint) -> Option<f32>) -> Vec<Descriptor> {
     let pat = pattern();
     kps.iter()
@@ -111,7 +103,6 @@ pub fn hamming(a: &Descriptor, b: &Descriptor) -> u32 {
     a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones()).sum()
 }
 
-/// Brute-force matches `a[i] -> b[j]` with max distance and Lowe ratio test.
 pub fn match_bf(a: &[Descriptor], b: &[Descriptor], max_dist: u32, ratio: f32) -> Vec<(usize, usize)> {
     a.iter()
         .enumerate()
@@ -135,7 +126,6 @@ mod tests {
     use super::*;
     use crate::image::blur;
 
-    /// Blurred value noise: textured enough for BRIEF.
     fn texture(n: usize) -> Gray {
         let mut s: u32 = 12345;
         let mut g = Gray::new(n, n);
@@ -146,7 +136,6 @@ mod tests {
         blur(&blur(&g))
     }
 
-    /// Rotate 90 degrees clockwise: (x, y) -> (n-1-y, x).
     fn rot90(g: &Gray) -> Gray {
         let n = g.w;
         let mut out = Gray::new(n, n);

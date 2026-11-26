@@ -1,5 +1,3 @@
-//! WebAR core. M01: GPU front end (phase 1) and ground-plane SLAM (phase 2).
-
 pub mod fast;
 pub mod geom;
 pub mod image;
@@ -7,14 +5,6 @@ pub mod imu;
 pub mod orb;
 pub mod readback;
 pub mod slam;
-#[cfg(target_arch = "wasm32")]
-pub mod gpu;
-#[cfg(target_arch = "wasm32")]
-pub mod web;
-#[cfg(target_arch = "wasm32")]
-pub mod webgl;
-#[cfg(target_arch = "wasm32")]
-pub mod webgpu;
 
 /// Front-end tunables: the single source for the CPU reference and the GPU passes.
 #[derive(Clone, Copy, Debug)]
@@ -34,7 +24,6 @@ impl Default for FrontEnd {
 }
 
 /// CPU half of one tracked frame, shared by the browser `Tracker` and the replay test:
-/// keypoints + descriptors from the GPU (or CPU) readback, threshold adaptation, SLAM update.
 /// `slam` is None without a sensor; `vision` false applies the sensor rotation only. `t`: capture time (ms,
 /// NaN if unknown); `accel`: gravity-free acceleration in camera axes (m/s^2) if the page has it.
 pub fn track(levels: &[readback::Level], cfg: &mut FrontEnd, slam: Option<&mut slam::Slam>, sensor: &geom::M3, t: f64, accel: Option<geom::V3>, vision: bool) -> Vec<fast::Keypoint> {

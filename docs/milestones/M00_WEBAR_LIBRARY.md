@@ -4,7 +4,7 @@
 **Goal:** A closed-source, lightweight Rust/WASM WebAR package that provides SLAM, image tracking and VPS in the browser.
 
 ## Relations
-- Depends on: [M01](M01_SLAM.md)
+- Depends on: [M01](M01_SLAM.md), [M02](M02_SDK.md)
 - Enables: none
 
 ## Requirements

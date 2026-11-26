@@ -1,9 +1,9 @@
 //! Backend seam for the front-end passes. Pass order and level sizes live here once;
 //! `webgl` and `webgpu` only know how to run one pass and read a texture back.
 
-use crate::FrontEnd;
-use crate::image::{Gray, next_size};
-use crate::readback::Level;
+use opsis_core::FrontEnd;
+use opsis_core::image::{Gray, next_size};
+use opsis_core::readback::Level;
 use wasm_bindgen::JsValue;
 use web_sys::OffscreenCanvas;
 
@@ -21,14 +21,11 @@ pub enum Pass {
 pub trait Gpu {
     type Tex;
     fn size(t: &Self::Tex) -> (usize, usize);
-    /// Tightly packed RGBA8.
     fn upload(&self, rgba: &[u8], w: usize, h: usize) -> Result<Self::Tex, JsValue>;
     fn upload_gray(&self, g: &Gray) -> Result<Self::Tex, JsValue>;
     /// The canvas pixels as RGBA8, copied on the GPU (no getImageData round trip through the CPU).
     fn upload_canvas(&self, c: &OffscreenCanvas) -> Result<Self::Tex, JsValue>;
-    /// Run one pass into a new `w` x `h` RGBA8 texture.
     fn run(&self, pass: Pass, src: &Self::Tex, src2: Option<&Self::Tex>, w: usize, h: usize) -> Result<Self::Tex, JsValue>;
-    /// Tightly packed RGBA8.
     async fn read(&self, t: &Self::Tex) -> Result<Vec<u8>, JsValue>;
     /// Several textures in one GPU round trip where the backend can (WebGPU); WebGL reads are synchronous anyway.
     async fn read_all(&self, ts: &[Self::Tex]) -> Result<Vec<Vec<u8>>, JsValue> {
