@@ -25,6 +25,13 @@
 ## Validation (built the right thing)
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
+## Remaining (2026-11-26, ~75%: 8 of 12 met)
+- **Owner, on devices:**
+  - V4 / R5: HUD fps on an Android phone and an older iPhone. On Android, also check the HUD `scale` reads sensible (acceleration sign checked on iOS only).
+  - V2: the same short walk with `?backend=webgl` against WebGPU, comparing HUD position. Or Claude builds an offline WebGL pose check.
+  - VA1: place the cube, walk around it (closer, farther, crouch, look away, cover the lens) and judge whether it stays on the same floor spot.
+- **Quality, not a checkbox:** ~5–10% height (scale) creep per 10 s walk (`zratio` forward × reverse 1.04–1.24); see the log.
+
 ## Log
 - 2026-11-26: Narrower readback looked at, not built. The CPU needs per pixel: blurred luma (8 bit, all pixels, for descriptor patches), the NMS flag, and the u16 FAST score at survivors and their 4 neighbors (sub-pixel parabola, ranking). Scores often exceed 255 (sum of arc differences), so a 2-byte format must quantize them, which changes keypoint positions and ranking (no longer exact, replays shift). WebGPU has no 3-byte color format, so exact packing stays at 4 bytes. Compacting survivors on the GPU needs a second round trip or compute-shader compaction. The best case would save ~0.7 of the 1.4 ms unpack, not worth that cost at 60 fps.
 - 2026-11-26: CPU per frame. Phone: copy 2.5 (page `drawImage`) + upload ~4 (`copyExternalImageToTexture`) + unpack 1.4 + track ~3 ms.
