@@ -1,8 +1,9 @@
-# Opsis
+# Opsis: Markerless augmented reality on the Web
 
 Markerless augmented reality for the mobile web. Opsis tracks where the phone is in the room from its camera and motion sensors, so 3D content stays fixed in the real world while the user walks around it. It runs in any mobile browser, with no app install and no cloud, and works with any 3D engine.
 
 ## Why
+
 - **WebXR is not everywhere.** iPhones have no WebXR AR in Safari. Opsis runs on plain web APIs (camera, motion sensors, WebGPU or WebGL2).
 - **Light.** About 120 KB gzip in total, no dependencies. The heavy work runs in Rust compiled to WebAssembly, with image processing on the GPU.
 - **Any engine.** Opsis does not own your scene. It gives you a camera pose; three.js, Babylon.js, PlayCanvas, A-Frame or raw WebGL/WebGPU draw with it.
@@ -14,7 +15,8 @@ Markerless augmented reality for the mobile web. Opsis tracks where the phone is
 import { start } from "opsis";
 import { updateCamera } from "opsis/three";
 
-startButton.onclick = async () => {                  // must be a user tap: iOS asks for sensor permission
+// must be a user tap: iOS asks for sensor permission
+startButton.onclick = async () => {
   const session = await start({ mount: document.getElementById("app") });
   session.onFrame((frame) => {
     const aspect = innerWidth / innerHeight;
@@ -28,7 +30,7 @@ startButton.onclick = async () => {                  // must be a user tap: iOS 
 
 ```html
 <div id="app" style="position:fixed;inset:0">
-  <canvas style="position:absolute;inset:0;width:100%;height:100%"></canvas> <!-- transparent engine canvas -->
+  <canvas style="position:absolute;inset:0;width:100%;height:100%"></canvas>
 </div>
 ```
 
@@ -67,6 +69,7 @@ Opsis puts the camera image in `#app` behind your canvas. Point the phone at the
 | `docs/` | Milestones, research notes, reviews. |
 
 ## Develop
+
 Needs Rust with the `wasm32-unknown-unknown` target, `wasm-bindgen`, `wasm-opt`, Node and pnpm.
 
 ```powershell
@@ -80,4 +83,5 @@ node tools/serve.mjs             # http://localhost:8081/examples/
 Phone recordings (`camera.html?record=1` with `.\tools\phone.ps1 -Record`) replay offline through the same tracker: `$env:OPSIS_REPLAY="recordings/<session>"; cargo test --release --test replay -- --ignored --nocapture`.
 
 ## Status
+
 World tracking works on an iPhone 16e at 60 fps (milestone [M01](docs/milestones/M01_SLAM.md)); the SDK is in progress ([M02](docs/milestones/M02_SDK.md)). Known limits: height can creep a few percent on longer walks, metric scale is not yet reliable, and only one device has been measured. Image tracking and VPS are planned ([M00](docs/milestones/M00_WEBAR_LIBRARY.md)). Proprietary.

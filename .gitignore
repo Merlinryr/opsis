@@ -4,3 +4,4 @@
 /packages/opsis/wasm
 /packages/opsis/dist
 node_modules
+/docs/research
