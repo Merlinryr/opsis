@@ -84,4 +84,4 @@ Phone recordings (`camera.html?record=1` with `.\tools\phone.ps1 -Record`) repla
 
 ## Status
 
-World tracking works on an iPhone 16e at 60 fps (milestone [M01](docs/milestones/M01_SLAM.md)); the SDK is in progress ([M02](docs/milestones/M02_SDK.md)). Known limits: height can creep a few percent on longer walks, metric scale is not yet reliable, and only one device has been measured. Image tracking and VPS are planned ([M00](docs/milestones/M00_WEBAR_LIBRARY.md)). Proprietary.
+World tracking works on an iPhone 16e at 60 fps (milestone [M01](docs/milestones/M01_SLAM.md)); the SDK is in progress ([M02](docs/milestones/M02_SDK.md)). Known limits: height can creep a few percent on longer walks, metric scale is not yet reliable, and only one device has been measured. Opsis does SLAM only; the focus is making it stable and reliable ([M00](docs/milestones/M00_WEBAR_LIBRARY.md)). Proprietary.

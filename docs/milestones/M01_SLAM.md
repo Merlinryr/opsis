@@ -8,15 +8,15 @@
 - Enables: [M02](M02_SDK.md), [M00](M00_WEBAR_LIBRARY.md)
 
 ## Requirements
-- [x] R1: Returns a 6-DoF camera pose every frame from camera + motion sensors (`Tracker.pose()` per frame in [camera.html](../../web/camera.html); position + yaw from vision, pitch/roll from the sensor; replays of 9 phone recordings, 2026-11-26).
+- [x] R1: Returns a 6-DoF camera pose every frame from camera + motion sensors (`Tracker.pose()` per frame, read by the SDK in [index.ts](../../packages/opsis/src/index.ts) and shown by [camera.html](../../examples/camera.html); position + yaw from vision, pitch/roll from the sensor; replays of 9 phone recordings, 2026-11-26).
 - [x] R2: Runs in the Rust/WASM core; GPU passes work on both WebGPU and WebGL.
-- [x] R3: Reports tracking state (normal, limited, lost) each frame (`State` in [slam.rs](../../src/slam.rs), on the HUD and in every replay line; leaving Lost takes Normal quality since 2026-11-26).
+- [x] R3: Reports tracking state (normal, limited, lost) each frame (`State` in [slam/mod.rs](../../crates/core/src/slam/mod.rs), on the HUD and in every replay line; leaving Lost takes Normal quality since 2026-11-26).
 - [x] R4: Recovers tracking after loss when the camera returns to a mapped area (covered-lens replay `10-44-12`: relocalizes at the origin, then a long loss re-seeds and merges back into the old map, closure 0.003; owner phone run 2026-11-26: losses on pans recover in place).
 - [ ] R5: Meets the M00 fps budget: ≥ 30 fps on all supported devices, ≥ 60 fps on recent flagships (_partial: 60.0 fps on iPhone 16e WebGPU, 2026-11-26; other devices not measured_).
 - [x] R6: Uses no GPL or non-commercial code ([licenses](../research/2026-11-24_WEBAR_LIBRARY_DESIGN.md#open-source-and-licenses)).
 
 ## Verification (built right)
-- [x] V1: Recorded-sequence test (`tests/replay.rs` on `recordings/`): pose error under a threshold (`WEBAR_REPLAY_MAX_ERR=0.15` on the `10-43-54` walk: closure 0.066, z spread 0.14, 2026-11-26).
+- [x] V1: Recorded-sequence test (`crates/core/tests/replay.rs` on `recordings/`): pose error under a threshold (`OPSIS_REPLAY_MAX_ERR=0.15` on the `10-43-54` walk: closure 0.066, z spread 0.14, 2026-11-26; the variable was `WEBAR_REPLAY_MAX_ERR` then).
 - [x] V2: Same sequence gives matching poses with WebGPU forced off (WebGL path). Owner, 2026-11-26: `?backend=webgl` runs as well as WebGPU.
 - [x] V3: Occlude-then-uncover test: state goes lost → normal and pose snaps back (replays of 2 phone recordings, 2026-11-25).
 - [ ] V4: Frame-time benchmark on target devices meets R5 (_partial: iPhone 16e only, HUD fps 60.0_).
@@ -25,12 +25,13 @@
 ## Validation (built the right thing)
 - [x] VA1: The owner places content on target phones, walks around it, and it stays anchored. Owner, 2026-11-26: the cube stays put after walking around and covering the lens.
 
-## Remaining (2026-11-26, ~75%: 8 of 12 met)
+## Remaining (2026-11-27, 10 of 12 met)
 - **Owner, on devices:**
   - V4 / R5: HUD fps on an Android phone and an older iPhone. On Android, also check the HUD `scale` reads sensible (acceleration sign checked on iOS only).
 - **Quality, not a checkbox:** ~5–10% height (scale) creep per 10 s walk (`zratio` forward × reverse 1.04–1.24); see the log.
 
 ## Log
+- 2026-11-27: No tracker change. The code now lives in `crates/core` (`opsis-core`; `slam.rs` split into `slam/{mod,ba,epipolar,reloc,scale,tests}.rs`) and `crates/wasm`; `web/` became `examples/`, `scripts/` became `tools/`, `WEBAR_*` env vars became `OPSIS_*`; older entries below keep the old names. All 12 recordings replay identical to before the move, 38 host tests pass. `camera.html` runs on the [M02](M02_SDK.md) SDK (HUD and recording unchanged, positions in Y-up). New `Tracker.reset()` drops the map (SDK `recenter()`). Research notes are now kept out of git (`docs/research` is ignored), so their links resolve locally only.
 - 2026-11-26: Loop takes `22-05-14` and `22-05-47` (owner, ~1.30 m, 3 seeds; all Normal, never lost). Only 5 s each: `camera.html` capped recordings at 300 frames, now `?frames=N`. `22-05-47`: closure 0.006–0.010 units, end height 1.02x start, IMU scale 1.24–1.26 m/unit (truth ~1.30, -4%). `22-05-14`: closure 0.054–0.076 (~3% of path), ends 9% low, IMU scale 0.96 m/unit (-26%); whether the phone ended lower is unknown. The IMU scale spread across takes stays too wide to correct height with.
 - 2026-11-26: Loop-to-a-mark take `22-01-16` (owner, phone ~1.30 m, 20 s, ~1 m path, 3 seeds): 594 of 599 frames Normal, closure gap 0.003–0.006 units (0.4–0.8% of path), height dips 4% at the far end and returns to 1.00 at the mark. No accumulating creep on this short loop; the creep seen on longer walks is still open. IMU scale found nothing (too little motion to excite the accelerometer).
 - 2026-11-26: Fast-turn tracking hold tried and rejected (5 seeds × 9 takes against the `MAX_MAP` 3000 baseline). Map edits above 70°/s were already gated; this also skipped the pose solve, holding position and following the sensor rotation.

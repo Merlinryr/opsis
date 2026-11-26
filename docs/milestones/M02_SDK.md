@@ -1,20 +1,20 @@
 # M02: SDK
 
 **State:** In progress
-**Goal:** Ship the M01 tracker as an npm SDK: a TypeScript API over the Rust/WASM core, with thin adapters for Three.js and Babylon.
+**Goal:** Ship the M01 tracker as the npm SDK `opsis`: a TypeScript API over the Rust/WASM core, usable from any engine, with thin adapters for three.js, Babylon.js and PlayCanvas.
 
 ## Relations
 - Depends on: [M01](M01_SLAM.md)
 - Enables: [M00](M00_WEBAR_LIBRARY.md)
 
-## Target flow
+## Flow (as built)
 ```
- Browser                 TS layer (opsis)                        Rust/WASM core
- ───────                 ──────────────────────                  ──────────────
- getUserMedia  ──video──▶ camera.ts ──frame (canvas)───────────▶ GPU front end
- devicemotion  ──imu────▶ sensors.ts ─gravity, accel, time─────▶   (WebGPU | WebGL,
- orientation   ─────────▶ (permissions, iOS prompt)               private context)
-                          loop.ts (rAF / video frame callback)        │
+ Browser                 opsis (packages/opsis/src/index.ts)     Rust/WASM (crates/wasm Tracker)
+ ───────                 ───────────────────────────────────     ───────────────────────────────
+ getUserMedia  ──video──▶ start(): camera, video → canvas ──────▶ GPU front end
+ devicemotion  ──imu────▶ nearest orientation + accel samples ──▶   (WebGPU | WebGL2,
+ orientation   ─────────▶ permissions (iOS prompt in the tap)      private context)
+                          frame loop (video frame callback, rAF)      │
                                  ▲                                    ▼
                                  └──── pose, state, scale ◀──── SLAM tracker (CPU)
                                  │
@@ -47,10 +47,12 @@ crates/
   core/      opsis-core: image, fast, orb, readback (unpack), geom, imu, slam/  — host tests, replay
     src/slam/  mod.rs (state + update), ba.rs, epipolar.rs, reloc.rs, scale.rs, tests.rs
     tests/replay.rs
-  wasm/      opsis (wasm-bindgen): tracker.rs (Tracker), parity.rs, gpu.rs, webgl.rs, webgpu.rs
+  wasm/      opsis (wasm-bindgen): tracker.rs (Tracker), parity.rs (cargo feature `parity`), gpu.rs, webgl.rs, webgpu.rs
 packages/
-  opsis/     npm `opsis`: src/index.ts (camera, sensors, loop, Frame), three.ts, babylon.ts; wasm/ from build-web
-examples/    vanilla, webgl, webgpu, three, babylon (.html), camera.html (diagnostic HUD, record), index.html (parity)
+  opsis/     npm `opsis`: src/index.ts (start, Session, Frame), three.ts, babylon.ts, playcanvas.ts;
+             test/frame.test.mjs; README.md (API); wasm/ and dist/ are build output (gitignored)
+examples/    vanilla, webgl, webgpu, three, babylon, playcanvas, aframe (.html), style.css,
+             camera.html (diagnostic HUD, recording), index.html (links + parity, needs build-web -Parity)
 tools/       serve.mjs, phone.ps1, build-web.ps1, replay-seeds.ps1
 recordings/  docs/   (unchanged)
 ```
@@ -62,18 +64,23 @@ recordings/  docs/   (unchanged)
 - [x] R2: `opsis` exposes `start(options)` → session with `onFrame`, `onStatus`, `onError`, `frame` (pull), `pause`, `resume`, `recenter`, `stop`; frames carry `pose`, `fovY`, `projectionMatrix`, typed `hitTest`, `state`, `scale`. No Rust type in the public API.
 - [x] R3: Camera, permissions (incl. iOS motion prompt), sensors and orientation handling live in `opsis`, not in example pages.
 - [x] R4: `opsis/three`, `opsis/babylon` and `opsis/playcanvas` each stay under ~100 lines and only map the frame to the engine camera; A-Frame uses `opsis/three`.
-- [ ] R5: Works on both WebGPU and WebGL backends from the same API.
-- [x] R6: Ships as ESM + `.d.ts` with the wasm and no Rust source (M00 R8).
+- [ ] R5: Works on both WebGPU and WebGL backends from the same API (_built: `backend: "auto" | "webgpu" | "webgl"`; not yet run through the SDK on WebGL, nor on a phone_).
+- [x] R6: Ships as ESM + `.d.ts` with the wasm and no Rust source.
 
 ## Verification (built right)
 - [x] V1: `cargo test -p opsis-core` passes on the host with replays identical to before the move.
 - [x] V2: `cargo tree -p opsis-core` shows no wasm-bindgen, web-sys or wgpu.
 - [x] V3: `tools/build-web.ps1` (cargo + wasm-bindgen + tsc) and `pnpm test` pass; `pnpm pack --dry-run` lists no `.rs` file.
-- [x] V4: `examples/index.html` (parity) PASS on desktop WebGL2 and WebGPU.
-- [x] V5: Release wasm gzip ≤ the M00 R9 budget (103 KB, parity left out).
+- [x] V4: `examples/index.html` (parity, `tools/build-web.ps1 -Parity`) PASS on desktop WebGL2 and WebGPU (2026-11-26, before the SDK; front-end code unchanged since).
+- [x] V5: Release wasm gzip ≤ the M00 R5 budget (104.5 KB, parity left out).
 
 ## Validation (built the right thing)
 - [ ] VA1: Owner builds a fresh Three.js page and a fresh Babylon page from `packages/opsis/README.md` only, on iPhone; the cube stays anchored while walking, as in M01 VA1.
+
+## Remaining (2026-11-27, 10 of 12 met)
+- **Owner, on the iPhone (`tools/phone.ps1`):** VA1 (fresh three.js and Babylon pages from the README); R5 with `camera.html?backend=webgl`; `recenter()` and `?background=tracked` in `three.html`; the PlayCanvas and A-Frame pages.
+- **Not verified anywhere yet:** the engine example pages rendering (the desktop pane was hidden, so frames were throttled).
+- **Open choices:** publishing (`opsis` name and `@opsis` scope not checked on npm; `license` is `UNLICENSED`); minifying the shipped JS (glue 12.7 KB gzip unminified).
 
 ## Log
 - 2026-11-26: Created. Flow from the SDK design discussion; architecture review above. Not started.
@@ -94,3 +101,4 @@ recordings/  docs/   (unchanged)
   - Weight: wasm 104.5 KB gzip (+0.05 for `reset`).
   - Checked: `pnpm test` (4 tests, adds hit type and distance, no hit looking up); in the pane with a fake camera: tracked background canvas 640×360, no frames while paused and video paused, frames again after resume, stop empties the mount. Not checked: `recenter` (a static fake scene re-seeds to the same map), the PlayCanvas and A-Frame pages rendering, anything on a phone.
 - 2026-11-27: Root `README.md` (goals, quick start, architecture flow, repository map, dev commands, status). Redundant comments removed from the SDK and examples; public API TSDoc kept (units and semantics show in IDEs).
+- 2026-11-27: `docs/research` is now gitignored and was removed from the whole git history (force-pushed `main`), so the research links above resolve locally only.
