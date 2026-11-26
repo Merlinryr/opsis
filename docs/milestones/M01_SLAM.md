@@ -33,6 +33,10 @@
 - **Quality, not a checkbox:** ~5–10% height (scale) creep per 10 s walk (`zratio` forward × reverse 1.04–1.24); see the log.
 
 ## Log
+- 2026-11-26: Active search tried and rejected (5 seeds × 9 takes against the `MAX_MAP` 3000 baseline). Map points that project with no kept keypoint in their 3×3 cells of 8 px pull in the NMS survivors the 500 cap dropped there; those corners match but don't grow the map.
+  - Uncapped: lost 11 → 2 (`10-43-54`) and 207 → 191 (`11-55-10`), and `12-43-04` closure median 0.089 → 0.011 with its worst seed 0.47 → 0.06. But track mean +25–115% (`12-43-04` 3.1 → 6.7 ms, max 15), a wrong pose on `10-44-12` (gap max 2.4, one seed), and `10-51-41` closure 0.003 → 0.011.
+  - Capped at the 150 strongest: still +20–40% track. The `12-43-04` win is gone (worst seed 0.65), with wrong poses on `10-51-41` (gap max 0.8) and `14-02-35` (closure 0.098).
+  - Weaker corners add matches and ambiguity together. A next try would need a tighter acceptance for extra corners (a stricter Hamming bound or ratio) rather than a count cap.
 - 2026-11-26: Narrower readback looked at, not built. The CPU needs per pixel: blurred luma (8 bit, all pixels, for descriptor patches), the NMS flag, and the u16 FAST score at survivors and their 4 neighbors (sub-pixel parabola, ranking). Scores often exceed 255 (sum of arc differences), so a 2-byte format must quantize them, which changes keypoint positions and ranking (no longer exact, replays shift). WebGPU has no 3-byte color format, so exact packing stays at 4 bytes. Compacting survivors on the GPU needs a second round trip or compute-shader compaction. The best case would save ~0.7 of the 1.4 ms unpack, not worth that cost at 60 fps.
 - 2026-11-26: CPU per frame. Phone: copy 2.5 (page `drawImage`) + upload ~4 (`copyExternalImageToTexture`) + unpack 1.4 + track ~3 ms.
   - Native profile of track's front-end half: descriptors 1.16, keypoint gathering 0.31, retain 0.17, blurred copy 0.15 ms; SLAM ~0.8 ms.
