@@ -26,6 +26,12 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Replays of the two new IMU recordings on 422e6fb.
+  - `10-43-54` (walk): 574/599 Normal, lost 4, z 0.94–1.09, closure 0.044 (0.9% of a 5.1 m path), track mean 3.9 / max 7.3 ms.
+  - `10-44-12` (covered lens): forward pass gets lost at ~70–160, then relocalizes back to the origin (R4/V3 hold). A second cover at ~230 runs across the turnaround: about 100 lost frames, which triggers the floor re-seed (map 1148 → 322). That moves the origin by ~1 m in y, giving closure 1.016. The Limited frames before the re-seed report garbage poses (up to y −7.8).
+  - Per-frame trace: every pose jump came from a Lost → Limited relocalization (1–8 units off), which then became the Lost "last pose". Two weak Limited jumps chained into a wrong Normal.
+  - Fix: leaving Lost now takes Normal quality, and a long loss re-seeds only if the map has under `MIN_INIT_POINTS` points (otherwise it keeps relocalizing). Trade-off: in a genuinely new place it stays Lost until the mapped area is back in view. Upgrade: a second map, merged on relocalization.
+  - After: `10-44-12` closure 1.016 → 0.002, lost 260 → 299 (the wrong poses are now Lost), z 0.90–1.10. `10-43-54` closure 0.044 → 0.066, lost 4 → 7. `14-02-15`/`14-02-35` within noise (0.007 → 0.004, 0.034 → 0.036). 37 host tests. Not run on the phone yet.
 - 2026-11-26: Replays of 422e6fb vs f0b8583, 3 seeds each. Only the two covered-lens recordings are still on disk (`14-02-15`, `14-02-35`); the corridor, room, grey and tilt runs are gone. They have no IMU columns, so scale isn't exercised.
 
   | | f0b8583 | 422e6fb |

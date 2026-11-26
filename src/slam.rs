@@ -93,7 +93,7 @@ const MATCH_DIST: u32 = 64;
 const INLIER_PX: f32 = 4.0;
 const NORMAL_INLIERS: usize = 25;
 const LIMITED_INLIERS: usize = 15;
-const REINIT_AFTER_LOST: u32 = 90; // frames (~3 s) of failed relocalization: then re-seed from the floor
+const REINIT_AFTER_LOST: u32 = 90; // frames (~3 s) of failed relocalization: then re-seed, if the map is too thin to relocalize
 const RATIO: f32 = 0.8; // Lowe ratio, guided and global matching
 const MAX_MISSES: u8 = 10;
 const MIN_PARALLAX_COS: f32 = 0.99756; // cos(4 deg)
@@ -255,16 +255,20 @@ impl Slam {
         self.state = match self.inliers {
             _ if c[2] <= 0.0 || (lost && (c[2] - self.c[2]).abs() > MAX_RELOC_DZ) => State::Lost,
             n if n >= NORMAL_INLIERS && n * 8 >= matches.len() => State::Normal,
-            n if n >= LIMITED_INLIERS && n * 4 >= matches.len() => State::Limited,
+            // Leaving Lost takes Normal quality: Lost -> Limited relocalizations were 1-8 units off on the
+            // covered-lens replay (2026-11-26) and then became the Lost "last pose".
+            n if !lost && n >= LIMITED_INLIERS && n * 4 >= matches.len() => State::Limited,
             _ => State::Lost,
         };
         if self.state == State::Lost {
-            // Keep the last pose and keep relocalizing. shortcut: after REINIT_AFTER_LOST frames the map is
-            // re-seeded from the floor at the last x/y (new place); anchors can jump.
+            // Keep the last pose and keep relocalizing against the map. A re-seed threw the map away mid-recording
+            // and moved the origin (covered-lens replay, 2026-11-26), so only a map too thin to relocalize is
+            // replaced. shortcut: in a genuinely new place it stays Lost until the mapped area is back in view;
+            // upgrade to keeping a second map and merging on relocalization.
             self.v = [0.0; 3];
             self.motion.clear();
             self.lost_frames += 1;
-            if self.lost_frames >= REINIT_AFTER_LOST {
+            if self.lost_frames >= REINIT_AFTER_LOST && self.map.len() < MIN_INIT_POINTS {
                 self.state = State::Initializing;
             }
             return;
@@ -953,7 +957,7 @@ mod tests {
         }
     }
 
-    /// After ~1 s lost, the tracker re-seeds from the floor and keeps its last x/y.
+    /// Long lost with a map: keeps relocalizing against it. Only a thin map gets re-seeded (at the last x/y).
     #[test]
     fn reinitializes_after_being_lost() {
         let mut s = 11;
@@ -966,12 +970,20 @@ mod tests {
         for _ in 0..REINIT_AFTER_LOST {
             slam.update(&[], &[], &sensor, f64::NAN, None); // e.g. covered lens
         }
+        assert_eq!(slam.state, State::Lost);
+        let (kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &w);
+        slam.update(&kps, &desc, &sensor, f64::NAN, None);
+        assert_eq!(slam.state, State::Normal, "relocalized against the kept map");
+        slam.map.truncate(MIN_INIT_POINTS - 1);
+        for _ in 0..REINIT_AFTER_LOST {
+            slam.update(&[], &[], &sensor, f64::NAN, None);
+        }
         assert_eq!(slam.state, State::Initializing);
         // Floor visible again from elsewhere: re-seeds at the last known x/y.
         let (kps, desc) = observe(&slam, &sensor, [0.5, 0.0, 1.0], &w);
         slam.update(&kps, &desc, &sensor, f64::NAN, None);
         assert_eq!(slam.state, State::Normal);
-        assert_eq!(slam.c, [0.0, 0.0, CAMERA_HEIGHT]);
+        assert!(norm(sub(slam.c, [0.0, 0.0, CAMERA_HEIGHT])) < 1e-6, "{:?}", slam.c);
     }
 
     /// A third of the corners sit on a 0.4-high platform (a stool top, a box). They are seeded as
