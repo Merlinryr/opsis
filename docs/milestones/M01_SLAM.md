@@ -17,19 +17,17 @@
 
 ## Verification (built right)
 - [x] V1: Recorded-sequence test (`tests/replay.rs` on `recordings/`): pose error under a threshold (`WEBAR_REPLAY_MAX_ERR=0.15` on the `10-43-54` walk: closure 0.066, z spread 0.14, 2026-11-26).
-- [ ] V2: Same sequence gives matching poses with WebGPU forced off (WebGL path).
+- [x] V2: Same sequence gives matching poses with WebGPU forced off (WebGL path). Owner, 2026-11-26: `?backend=webgl` runs as well as WebGPU.
 - [x] V3: Occlude-then-uncover test: state goes lost → normal and pose snaps back (replays of 2 phone recordings, 2026-11-25).
 - [ ] V4: Frame-time benchmark on target devices meets R5 (_partial: iPhone 16e only, HUD fps 60.0_).
 - [x] V5: Dependency license audit (e.g. `cargo deny check licenses`) passes.
 
 ## Validation (built the right thing)
-- [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
+- [x] VA1: The owner places content on target phones, walks around it, and it stays anchored. Owner, 2026-11-26: the cube stays put after walking around and covering the lens.
 
 ## Remaining (2026-11-26, ~75%: 8 of 12 met)
 - **Owner, on devices:**
   - V4 / R5: HUD fps on an Android phone and an older iPhone. On Android, also check the HUD `scale` reads sensible (acceleration sign checked on iOS only).
-  - V2: the same short walk with `?backend=webgl` against WebGPU, comparing HUD position. Or Claude builds an offline WebGL pose check.
-  - VA1: place the cube, walk around it (closer, farther, crouch, look away, cover the lens) and judge whether it stays on the same floor spot.
 - **Quality, not a checkbox:** ~5–10% height (scale) creep per 10 s walk (`zratio` forward × reverse 1.04–1.24); see the log.
 
 ## Log
