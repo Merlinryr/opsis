@@ -26,6 +26,7 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Narrower readback looked at, not built. The CPU needs per pixel: blurred luma (8 bit, all pixels, for descriptor patches), the NMS flag, and the u16 FAST score at survivors and their 4 neighbors (sub-pixel parabola, ranking). Scores often exceed 255 (sum of arc differences), so a 2-byte format must quantize them, which changes keypoint positions and ranking (no longer exact, replays shift). WebGPU has no 3-byte color format, so exact packing stays at 4 bytes. Compacting survivors on the GPU needs a second round trip or compute-shader compaction. The best case would save ~0.7 of the 1.4 ms unpack, not worth that cost at 60 fps.
 - 2026-11-26: CPU per frame. Phone: copy 2.5 (page `drawImage`) + upload ~4 (`copyExternalImageToTexture`) + unpack 1.4 + track ~3 ms.
   - Native profile of track's front-end half: descriptors 1.16, keypoint gathering 0.31, retain 0.17, blurred copy 0.15 ms; SLAM ~0.8 ms.
   - Cuts, exact (same replay output under the same seed): descriptors skip per-sample clamping when the patch is inside the level, and keypoint extraction reads scores straight from the readback instead of building a full-image score map. Native track mean 2.57 → 2.38 ms (12-06-23). Parity PASS on desktop WebGL2 + WebGPU. Not timed on the phone.
