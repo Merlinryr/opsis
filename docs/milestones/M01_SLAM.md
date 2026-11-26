@@ -26,6 +26,8 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Tried holding scale with the IMU before writing code, and changed nothing. Sliding 3 s IMU scale windows (0.4 s low-pass, va/vv) vary 1.46–1.96 m/unit on `12-06-23`, whose height holds within 0.09 the whole walk. That is ±15–25% noise at the 3 s scale the `12-43-04` drift happens on (1.44 → 0.88 there, but `10-43-54` falls 1.57 → 0.94 with z flat too: late windows correlate less). 5 s windows are calmer but slower than the drift. A correction from this signal would add as much error as it removes.
+  - Open options: an anchor that survives new floor (keyframe-based height: re-observe the original floor patch's scale through keyframe chains), or accept per-walk height drift of this size.
 - 2026-11-26: `12-43-04` height drift (z 0.93 → 1.23 forward, correlation 0.77 with pitch) has no anchor.
   - `WEBAR_REPLAY_BORN=n` prints inliers by map point age. Points from before frame 100 carry the pose until ~130, then leave the view (≤ 20 matched from frame 160, 0 by 280), while z climbs on points seeded during the walk. On new floor the height is set by fresh seeds only, so height (= scale, since the unit is the camera height) drifts.
   - Not FOV: 64° cuts this take's spread 0.35 → 0.25 but doubles it on `10-43-54`. Not pitch bias: ±2–4° makes no consistent change. The IMU vertical motion correlates only 0.39 with the visual height, so part may be a real lift.
