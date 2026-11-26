@@ -154,9 +154,21 @@ impl Tracker {
         Ok(Tracker { backend, cfg: Cell::new(FrontEnd::default()), fov: fov_deg, slam: RefCell::new(None), split_ms: Cell::new([0.0; 3]) })
     }
 
-    /// [GPU encode + submit, GPU wait + readback, track] ms of the last `detect`.
+    /// [GPU encode + submit, GPU wait + readback, track] ms of the last `detect`, then on WebGPU the wait
+    /// split [GPU work done, buffers mapped, unpacked].
     pub fn split_ms(&self) -> Vec<f64> {
-        self.split_ms.get().to_vec()
+        let mut v = self.split_ms.get().to_vec();
+        if let Backend::Gpu(g) = &self.backend {
+            v.extend(g.wait_ms.get());
+        }
+        v
+    }
+
+    /// Pyramid levels (diagnostic `?levels=`: how GPU wait scales with the passes and readback size).
+    pub fn set_levels(&self, n: usize) {
+        let mut cfg = self.cfg.get();
+        cfg.levels = n.clamp(1, 8);
+        self.cfg.set(cfg);
     }
 
     /// Current adaptive FAST threshold.

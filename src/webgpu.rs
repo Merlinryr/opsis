@@ -111,6 +111,8 @@ pub struct Wgpu {
     pool: Pool,
     /// Passes recorded since the last read, submitted together: one submit per pass was ~26 per frame.
     enc: RefCell<Option<wgpu::CommandEncoder>>,
+    /// Last `read_all` wait split, ms: [submit -> GPU work done, -> buffers mapped, -> unpacked].
+    pub wait_ms: std::cell::Cell<[f64; 3]>,
 }
 
 fn err(e: impl std::fmt::Display) -> JsValue {
@@ -168,7 +170,7 @@ impl Wgpu {
             })
         };
         let pipes = [pipe("luma"), pipe("blur"), pipe("down"), pipe("fast"), pipe("nms")];
-        Ok(Self { device, queue, layout, pipes, pool: Pool::default(), enc: RefCell::default() })
+        Ok(Self { device, queue, layout, pipes, pool: Pool::default(), enc: RefCell::default(), wait_ms: Default::default() })
     }
 
     fn texture(&self, w: usize, h: usize, format: wgpu::TextureFormat, data: Option<&[u8]>) -> Tex {
@@ -316,6 +318,12 @@ impl Gpu for Wgpu {
             })
             .collect();
         self.queue.submit([enc.finish()]);
+        let t0 = js_sys::Date::now();
+        let done = js_sys::Promise::new(&mut |resolve, _| {
+            self.queue.on_submitted_work_done(move || {
+                let _ = resolve.call0(&JsValue::NULL);
+            })
+        });
         let maps: js_sys::Array = bufs
             .iter()
             .map(|buf| {
@@ -327,13 +335,23 @@ impl Gpu for Wgpu {
                 })
             })
             .collect();
+        wasm_bindgen_futures::JsFuture::from(done).await?;
+        let t1 = js_sys::Date::now();
         wasm_bindgen_futures::JsFuture::from(js_sys::Promise::all(&maps)).await?;
-        ts.iter()
+        let t2 = js_sys::Date::now();
+        let out = ts
+            .iter()
             .zip(&bufs)
             .map(|(t, buf)| {
                 let mapped = buf.get_mapped_range(..).map_err(err)?;
-                Ok(mapped.chunks(row(t)).flat_map(|r| &r[..t.w * 4]).copied().collect())
+                let mut v = Vec::with_capacity(t.w * 4 * t.h);
+                for r in mapped.chunks(row(t)) {
+                    v.extend_from_slice(&r[..t.w * 4]);
+                }
+                Ok(v)
             })
-            .collect()
+            .collect();
+        self.wait_ms.set([t1 - t0, t2 - t1, js_sys::Date::now() - t2]);
+        out
     }
 }

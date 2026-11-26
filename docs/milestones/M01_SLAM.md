@@ -26,6 +26,10 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Phone HUD after batching: copy 2.0, gpu enc 0.2, wait 10.1, track 2.5 ms. The old build's `gpu` was 10.9, so batching saved under 1 ms: detect is wait-bound.
+  - Added a diagnostic: the HUD splits `wait` into `gpu` (submit → work done), `map` (→ buffers mapped) and `unpack`, plus a `?levels=n` param to see what scales with passes and readback size (~1.7 MB at 4 levels).
+  - The row unpack now uses per-row `extend_from_slice`. Parity PASS on desktop WebGL2 + WebGPU.
+  - Next: the HUD at `?levels=4` and `?levels=1`, then pick: GPU-bound → fewer/cheaper passes; map-bound → narrower readback; fixed floor → only overlapping frames, which adds a frame of lag.
 - 2026-11-26: Replay of `12-06-23` on ccc589e: 593 Normal of 599, 0 Limited, 0 lost, closure 0.003 (0.1% of a 3.7 m path), z 0.94–1.03, track mean 2.3 / max 4.4 ms. Passes V1 at 0.15. Best run so far. Old-point inlier share 37% (walk `10-43-54`: 24%).
 - 2026-11-26: `camera.html` keeps drawing the cube for up to 1 s after tracking is lost, from the last position with the live gyro rotation, in orange like Limited. Lost longer than that hides it as before. Page loads without errors on desktop; not tried on the phone.
 - 2026-11-26: Looked into "hold tracking through fast pans" on `11-55-10` before writing code, and changed nothing. Gyro prediction is already in: `orient()` applies the current sensor rotation before guided matching, and floor descriptors are world-oriented.

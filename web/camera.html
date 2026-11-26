@@ -22,6 +22,7 @@
   const FOV = Number(params.get("fov") ?? 69); // degrees across the long side; tune until the grid holds when turning
   const DELAY = Number(params.get("delay") ?? 0); // ms the sensor leads the camera; tune until the grid holds when turning fast
   const RECORD = params.get("record") === "1"; // ?record=1: upload luma + sensor angles (server needs WEBAR_RECORD=1)
+  const LEVELS = Number(params.get("levels") ?? 0); // ?levels=n: diagnostic, pyramid levels (default 4)
   const VISION = params.get("vision") !== "0"; // ?vision=0: sensor rotation only, to tune fov and delay over a fixed grid
   const COLORS = ["#ff3b30", "#ffcc00", "#34c759", "#0a84ff"];
   const STATES = ["initializing: tilt down at the floor", "normal", "limited", "lost"];
@@ -62,6 +63,7 @@
       });
       await video.play();
       const tracker = await Tracker.create($("gl"), webgpu, FOV);
+      if (LEVELS) tracker.set_levels(LEVELS);
       const k = MAX_SIDE / Math.max(video.videoWidth, video.videoHeight);
       const w = Math.round(video.videoWidth * k), h = Math.round(video.videoHeight * k);
       view.width = w; view.height = h;
@@ -71,7 +73,7 @@
       // (the browser presents during the await, which would show the frame before it is drawn).
       // No willReadFrequently: that keeps the canvas on the CPU; the GPU copies it straight into a texture.
       const work = new OffscreenCanvas(w, h).getContext("2d");
-      let emaMs = 0, emaFps = 0, emaSplit = [0, 0, 0], last = performance.now(), anchor = null, tracked = 0; // tracked: time of the last Normal/Limited frame
+      let emaMs = 0, emaFps = 0, emaSplit = [], last = performance.now(), anchor = null, tracked = 0; // tracked: time of the last Normal/Limited frame
 
       // Project world point X with pose array p (see Tracker.pose); null if behind the camera.
       const project = (p, X) => {
@@ -152,6 +154,7 @@
           + `driver ${driver}  sensor age ${s ? (want - s.t).toFixed(0) : "-"} ms\n`
           + `keypoints ${kps.length / 4} (t ${tracker.threshold()})  detect ${emaMs.toFixed(1)} ms  fps ${emaFps.toFixed(1)}\n`
           + `copy ${emaSplit[0].toFixed(1)}  gpu enc ${emaSplit[1].toFixed(1)} wait ${emaSplit[2].toFixed(1)}  track ${emaSplit[3].toFixed(1)} ms\n`
+          + (emaSplit.length > 4 ? `wait: gpu ${emaSplit[4].toFixed(1)} map ${emaSplit[5].toFixed(1)} unpack ${emaSplit[6].toFixed(1)}${LEVELS ? `  levels ${LEVELS}` : ""}\n` : "")
           + (!sensorOk ? "no orientation sensor: tracking off"
             : p.length ? `${STATES[p[0]]}  inliers ${p[1]}  map ${p[2]}\npos ${Array.from(p.slice(3, 6), (x) => x.toFixed(2)).join(" ")}  scale ${Number.isNaN(p[18]) ? (m ? "-" : "no motion sensor") : `${p[18].toFixed(2)} m/unit`}`
             : "waiting for sensor…");
