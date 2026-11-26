@@ -25,15 +25,19 @@ fn accel(p: &[V3], dt: f32) -> Vec<V3> {
 /// matches the frame. None without enough motion to tell, or with a non-positive fit.
 // shortcut: assumes uniform frame spacing; resample on timestamps if frame drops are common.
 pub fn scale_and_lag(p: &[V3], imu: &[V3], dt: f32, max_lag: usize) -> Option<(isize, f32)> {
-    const SMOOTH: usize = 3; // ~5 Hz cut at 30 fps (8th Wall `maxFreqForAlignment` 5)
-    if p.len() != imu.len() || p.len() < 4 * max_lag + 8 {
+    // 0.4 s moving average, twice (~1 Hz cut; 8th Wall uses 5 Hz). At 5 Hz (0.1 s) phone walks correlated
+    // at r 0.14-0.57 and the two estimates below spread 0.3-2.0 m/unit; at 0.4 s r 0.63-0.93 and they
+    // agree within ~15% around the true ~1.4 (replays 2026-11-26). In seconds: the rate is 30 or 60 fps.
+    let r = ((0.4 / dt).round() as usize).max(1);
+    let edge = max_lag.max(2 * r); // smoothing edges are biased
+    if p.len() != imu.len() || p.len() < 2 * edge + 4 * max_lag + 8 {
         return None;
     }
-    let v = accel(&smooth(&smooth(p, SMOOTH), SMOOTH), dt);
-    let a: Vec<V3> = smooth(&smooth(imu, SMOOTH), SMOOTH)[1..imu.len() - 1].to_vec();
+    let v = accel(&smooth(&smooth(p, r), r), dt);
+    let a: Vec<V3> = smooth(&smooth(imu, r), r)[1..imu.len() - 1].to_vec();
     let pairs = |lag: isize| {
         let n = v.len() as isize;
-        (max_lag as isize..n - max_lag as isize).map(move |i| (i as usize, (i + lag) as usize))
+        (edge as isize..n - edge as isize).map(move |i| (i as usize, (i + lag) as usize))
     };
     let corr = |lag: isize| {
         let (mut va, mut vv, mut aa) = (0.0, 0.0, 0.0);
@@ -43,12 +47,13 @@ pub fn scale_and_lag(p: &[V3], imu: &[V3], dt: f32, max_lag: usize) -> Option<(i
         (va / (vv * aa).sqrt().max(1e-12), va, vv, aa)
     };
     let lag = (-(max_lag as isize)..=max_lag as isize).max_by(|&x, &y| corr(x).0.total_cmp(&corr(y).0))?;
-    let (r, va, _, aa) = corr(lag);
+    let (c, va, vv, aa) = corr(lag);
     let n = pairs(lag).count() as f32;
-    // Needs real motion (mean |a| over ~0.3 m/s^2) and a clear correlation.
-    // aa/va, not va/vv: tracking jitter, twice differenced, inflates vv and biases va/vv low (synthetic test,
-    // ~4 mm jitter: va/vv 1.390, aa/va 1.401 for 1.4); the low-passed IMU noise biases aa/va far less.
-    (aa / n > 0.1 && r > 0.5 && va > 0.0).then(|| (lag, aa / va))
+    // Needs real motion (mean |a| over ~0.3 m/s^2) and a clear correlation. va/vv: on the phone walks aa/va
+    // read 1.64-1.81 for ~1.4 (IMU noise left in aa), va/vv 1.36-1.55; the low-pass took out the vision
+    // jitter that biased va/vv low at 5 Hz.
+    // A best lag on the search edge is no peak (a 100 ms edge fit read 0.91 for ~1.4).
+    (aa / n > 0.1 && c > 0.8 && va > 0.0 && lag.unsigned_abs() < max_lag).then(|| (lag, va / vv))
 }
 
 #[cfg(test)]

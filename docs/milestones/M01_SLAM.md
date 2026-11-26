@@ -26,6 +26,12 @@
 - [ ] VA1: The owner places content on target phones, walks around it, and it stays anchored.
 
 ## Log
+- 2026-11-26: Metric scale against the owner's phone height (~1.4 m):
+  - Low-pass 0.1 s → 0.4 s twice. Correlation on walks rose 0.43–0.57 → 0.9.
+  - Estimator aa/va → va/vv, with gate r > 0.8.
+  - Window and lag search are now in seconds (5 s, ±0.1 s), so 60 fps matches 30 fps. A best lag on the search edge is rejected.
+  - Replays: `12-06-23` 1.48 (+6%), `10-43-54` 1.52 (+8%), `10-51-41` 0.91 (−35%, lag 0; that take correlates at only 0.63 overall). `11-55-10` and `10-44-12`: none.
+  - 2 of 3 within 8%. Not live-checked. Scale is still reported only, not used by tracking.
 - 2026-11-26: Metric scale never converged (HUD `scale -`): visual and IMU accelerations correlated at r -0.4..0.03. An offline search over axis permutations and signs on the walk replays found the iPhone reports `devicemotion.acceleration` negated (r 0.57 / 0.43 at lag 0–1 frame).
   - Fix: one shared `geom::accel_in_camera`, used by the page and the replay, negates it.
   - Scale now converges on 3 of 4 IMU recordings: `12-06-23` 1.78, `10-43-54` 1.46, `10-51-41` 1.72 m/unit (unit = camera height at seed), IMU lag 0–33 ms. `11-55-10` (cover + pans) has no estimate.

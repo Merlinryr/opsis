@@ -104,8 +104,8 @@ const MAX_RELOC_DZ: f32 = 0.5 * CAMERA_HEIGHT;
 const OLD: u32 = 50; // frames: a point this old counts in `Slam::old`
 const MAX_TURN_RATE: f32 = 1.22; // rad/s (70 deg/s, 8th Wall `maxGyroMagnitude`): no map upkeep above
 const FRAME_S: f32 = 1.0 / 30.0; // frame interval assumed when no capture time is given (unit tests, old recordings)
-const SCALE_WINDOW: usize = 150; // frames (~5 s) of tracked motion per metric-scale estimate
-const MAX_LAG: usize = 10; // frames: camera-IMU offset searched within ~0.33 s (8th Wall cutoff 0.5 s)
+const SCALE_WINDOW_S: f32 = 5.0; // seconds of tracked motion per metric-scale estimate (150 frames at 30 fps, 300 at 60)
+const MAX_LAG_S: f32 = 0.1; // camera-IMU offset searched within +-0.1 s (8th Wall 0.5 s): the phone walks fit at 0-33 ms, and a 167 ms fit read 0.90 for ~1.4
 const SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.3..=3.0; // metres per unit: the unit is the camera height
 // Keyframes, from 8th Wall `MapBuilder`: cooldown 5 frames, >= 20 new points or < 120 map points, BA over 4.
 const KF_COOLDOWN: u32 = 5;
@@ -576,21 +576,22 @@ impl Slam {
         }
     }
 
-    /// Metric scale and IMU offset from the last `SCALE_WINDOW` tracked frames (device acceleration rotated
+    /// Metric scale and IMU offset from the last `SCALE_WINDOW_S` of tracked frames (device acceleration rotated
     /// to world by the camera rotation).
     fn estimate_scale(&mut self, accel: Option<V3>, dt: f32) {
         let Some(a) = accel else { return self.motion.clear() };
         let a = mulv(&self.r, a);
         let t = self.motion.last().map_or(0.0, |m| m.2) + dt;
         self.motion.push((self.c, a, t));
-        if self.motion.len() > SCALE_WINDOW {
+        while t - self.motion[0].2 > SCALE_WINDOW_S {
             self.motion.remove(0);
         }
-        if self.motion.len() == SCALE_WINDOW && self.frame % 30 == 0 {
+        let n = self.motion.len();
+        if t - self.motion[0].2 >= SCALE_WINDOW_S - 0.1 && self.frame % 30 == 0 {
             // Mean interval over the window: scale goes with dt^2, so one jittery frame must not set it.
-            let dt = (self.motion[SCALE_WINDOW - 1].2 - self.motion[0].2) / (SCALE_WINDOW - 1) as f32;
+            let dt = (t - self.motion[0].2) / (n - 1) as f32;
             let (p, imu): (Vec<V3>, Vec<V3>) = self.motion.iter().map(|m| (m.0, m.1)).unzip();
-            if let Some((lag, s)) = crate::imu::scale_and_lag(&p, &imu, dt, MAX_LAG).filter(|e| SCALE_RANGE.contains(&e.1)) {
+            if let Some((lag, s)) = crate::imu::scale_and_lag(&p, &imu, dt, ((MAX_LAG_S / dt).round() as usize).max(1)).filter(|e| SCALE_RANGE.contains(&e.1)) {
                 (self.metres_per_unit, self.imu_lag_ms) = (Some(s), Some(lag as f32 * dt * 1e3));
             }
         }
