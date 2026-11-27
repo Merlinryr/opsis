@@ -1,5 +1,4 @@
-//! Backend seam for the front-end passes. Pass order and level sizes live here once;
-//! `webgl` and `webgpu` only know how to run one pass and read a texture back.
+//! Shared GPU interface for the front-end passes. The pass order and level sizes are defined here once; `webgl` and `webgpu` only run one pass and read a texture back.
 
 use opsis_core::FrontEnd;
 use opsis_core::image::{Gray, next_size};
@@ -13,21 +12,21 @@ pub enum Pass {
     Blur(i32, i32),
     Down(f32),
     Fast(u8, usize),
-    /// Second input: blurred level, copied to alpha for descriptors.
+    /// Second input: the blurred level, copied into alpha for the descriptors.
     Nms,
 }
 
-#[allow(async_fn_in_trait)] // single-threaded wasm only
+#[allow(async_fn_in_trait)] // Fine here: wasm is single-threaded.
 pub trait Gpu {
     type Tex;
     fn size(t: &Self::Tex) -> (usize, usize);
     fn upload(&self, rgba: &[u8], w: usize, h: usize) -> Result<Self::Tex, JsValue>;
     fn upload_gray(&self, g: &Gray) -> Result<Self::Tex, JsValue>;
-    /// The canvas pixels as RGBA8, copied on the GPU (no getImageData round trip through the CPU).
+    /// Copies the canvas into an RGBA8 texture on the GPU (no slow CPU read-back).
     fn upload_canvas(&self, c: &OffscreenCanvas) -> Result<Self::Tex, JsValue>;
     fn run(&self, pass: Pass, src: &Self::Tex, src2: Option<&Self::Tex>, w: usize, h: usize) -> Result<Self::Tex, JsValue>;
     async fn read(&self, t: &Self::Tex) -> Result<Vec<u8>, JsValue>;
-    /// Several textures in one GPU round trip where the backend can (WebGPU); WebGL reads are synchronous anyway.
+    /// Reads several textures in one GPU round trip where possible (WebGPU); WebGL reads are synchronous anyway.
     async fn read_all(&self, ts: &[Self::Tex]) -> Result<Vec<Vec<u8>>, JsValue> {
         let mut out = Vec::new();
         for t in ts {
@@ -42,8 +41,7 @@ pub trait Gpu {
         self.run(Pass::Blur(0, 1), &tmp, None, w, h)
     }
 
-    /// Full front end on an RGBA frame texture, and the ms spent encoding and submitting the passes
-    /// (the rest of the call is waiting for the GPU and the readback).
+    /// Runs the whole front end on a frame texture. Also returns the ms spent sending work to the GPU; the rest is waiting for results.
     async fn front_end(&self, frame: &Self::Tex, cfg: &FrontEnd, border: usize) -> Result<(Vec<Level>, f64), JsValue> {
         let t0 = js_sys::Date::now();
         let (w, h) = Self::size(frame);

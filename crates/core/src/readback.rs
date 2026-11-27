@@ -1,11 +1,11 @@
-//! Pure code (no web APIs), so it is host-tested and shared by both GPU backends.
+//! No web APIs here, so it is unit-tested and shared by both GPU backends.
 
 use crate::FrontEnd;
 use crate::fast::{self, Keypoint};
 use crate::image::Gray;
 use crate::orb::{self, Descriptor};
 
-/// RGBA per pixel = (score lo, score hi, NMS survivor flag, blurred luma).
+/// RGBA per pixel = (score low byte, score high byte, corner kept flag, blurred grey).
 pub struct Level {
     pub w: usize,
     pub h: usize,

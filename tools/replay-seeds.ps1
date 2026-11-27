@@ -1,6 +1,6 @@
-# Replays every recording in recordings/ over several RANSAC seeds and prints the median [min..max] of each
-# metric per recording: a change counts only if it moves a median past the other run's range.
-#   .\scripts\replay-seeds.ps1 [-Seeds 5]
+# Replays every recording over several RANSAC seeds and prints the median [min..max] of each metric.
+# A change counts only if a median moves outside the other run's range.
+# .\tools\replay-seeds.ps1 [-Seeds 5]
 param([int]$Seeds = 5)
 
 cargo test --release --test replay --no-run 2>$null | Out-Null

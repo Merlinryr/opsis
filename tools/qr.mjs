@@ -1,10 +1,10 @@
-// Phone panel for phone.ps1: compact QR (half-block chars) + aligned, coloured info.
-// Run via `npx -p qrcode-terminal@0.12.0 node tools/qr.mjs <url> <local> <log>` (no root package.json).
+// Terminal panel for phone.ps1: a compact QR code plus the URLs.
+// Run as `npx -p qrcode-terminal@0.12.0 node tools/qr.mjs <url> <local> <log>`.
 import { createRequire } from 'node:module'
 import { delimiter, join } from 'node:path'
 
 const [url, local, log] = process.argv.slice(2)
-// npx puts the temp package's .bin on PATH; resolve the package from next to it.
+// npx puts the package's .bin on PATH; find the package next to it.
 const bin = process.env.PATH.split(delimiter).find(p => p.includes('_npx') && p.endsWith('.bin'))
 const qr = createRequire(join(bin ?? process.cwd(), '..', '_.js'))('qrcode-terminal')
 

@@ -26,7 +26,7 @@
 
   document.getElementById("start").onclick = async (e) => {
     e.target.hidden = true;
-    // ?background=video shows the live video instead: lower latency image, but content lags it while moving.
+    // ?background=video shows the live video instead: newer image, but content lags it while moving.
     const background = new URLSearchParams(location.search).get("background") ?? "tracked";
     const session = await start({ mount: document.getElementById("app"), background }).catch((err) => void (status.textContent = err));
     if (!session) return;

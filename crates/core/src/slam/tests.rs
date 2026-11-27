@@ -67,11 +67,11 @@ fn initializes_then_tracks_through_outliers() {
     assert_eq!(slam.state, State::Normal);
     assert!(slam.map_len() >= MIN_INIT_POINTS);
 
-    // Move, and let the sensor heading be 3 deg off; 30% of keypoints jump 50 px.
+    // Move, with the sensor heading 3° off and 30% of keypoints shifted 50 px.
     let (c_true, yaw_true) = ([0.15, 0.1, 1.0], 3f32.to_radians());
     let (mut kps, desc) = observe(&slam, &mul(&rot_z(yaw_true), &sensor), c_true, &w);
     for k in kps.iter_mut().step_by(3) {
-        k.x += 20.0; // inside the match radius, so these reach RANSAC as outliers
+        k.x += 20.0; // Still inside the match radius, so these reach RANSAC as outliers.
     }
     slam.update(&kps, &desc, &sensor, f64::NAN, None);
     assert_eq!(slam.state, State::Normal, "inliers {}", slam.inliers);
@@ -105,8 +105,7 @@ fn walks_off_the_initial_map_and_back() {
     assert!(slam.keyframes() >= 2, "keyframes {}", slam.keyframes());
 }
 
-/// Joint BA: 4 keyframes see floor points (fixed, they pin scale) and wall points. Keyframes 1-3 are
-/// nudged ~1 cm and 0.3 deg, wall points ~1 cm (a few px, what tracking leaves); BA brings both back.
+/// BA: 4 keyframes see floor points (fixed) and wall points. Keyframes 1-3 are nudged ~1 cm and 0.3°, wall points ~1 cm; BA must bring both back.
 #[test]
 fn local_ba_recovers_perturbed_poses_and_points() {
     let mut s = 9;
@@ -116,7 +115,7 @@ fn local_ba_recovers_perturbed_poses_and_points() {
     for (i, &x) in truth.iter().enumerate() {
         slam.map.push(MapPoint { x, desc: rand_desc(&mut s), misses: 0, seed: None, seen: 0, born: 0, id: i as u32, level: 0, dist: 1.0, views: Vec::new() });
     }
-    let poses: Vec<V3> = (0..4).map(|k| [k as f32 * 0.15, 0.0, 1.0]).collect(); // >= KF_BASELINE apart, as real keyframes are
+    let poses: Vec<V3> = (0..4).map(|k| [k as f32 * 0.15, 0.0, 1.0]).collect(); // Spaced like real keyframes (at least KF_BASELINE apart).
     for &c in &poses {
         let r = slam.rotation(&sensor, 0.0);
         let obs = truth.iter().enumerate().filter_map(|(i, &x)| slam.k.project(&r, c, x).filter(|p| (0.0..360.0).contains(&p.0) && (0.0..640.0).contains(&p.1)).map(|_| (i as u32, mulv(&transpose(&r), normalize(sub(x, c)))))).collect();
@@ -127,20 +126,19 @@ fn local_ba_recovers_perturbed_poses_and_points() {
         kf.yaw = 0.3f32.to_radians();
     }
     for mp in slam.map.iter_mut().filter(|m| m.x[2] > 0.0) {
-        mp.x = add(mp.x, [0.008, -0.006, 0.004]); // ~3 px: BA only takes observations that still fit (4 px)
+        mp.x = add(mp.x, [0.008, -0.006, 0.004]); // ~3 px: BA only uses observations that still fit (4 px).
     }
     slam.local_ba();
     for (kf, c) in slam.keyframes.iter().zip(&poses) {
         assert!(norm(sub(kf.c, *c)) < 0.005 && kf.yaw.abs() < 0.1f32.to_radians(), "keyframe {:?} yaw {} vs {c:?}", kf.c, kf.yaw.to_degrees());
     }
-    // Wall points seen by >= 3 keyframes (2 views 0.12 apart leave depth weak; unseen ones can't move).
+    // Wall points seen by 3+ keyframes (with only 2 close views, depth stays weak).
     let errs: Vec<f32> = slam.map.iter().zip(&truth).filter(|(m, _)| m.x[2] > 0.0 && slam.keyframes.iter().filter(|k| k.obs.iter().any(|o| o.0 == m.id)).count() >= 3).map(|(m, x)| norm(sub(m.x, *x))).collect();
     let mean = errs.iter().sum::<f32>() / errs.len() as f32;
     assert!(errs.len() >= 15 && mean < 0.004, "{} points, mean error {mean} (nudged 0.0108)", errs.len());
 }
 
-/// Epipolar creation: two keyframes 0.3 apart see the same wall corners as free keypoints (plus one
-/// corner only the second sees); the matched ones become map points at their true positions.
+/// Two keyframes 0.3 apart see the same wall corners as unmatched keypoints, plus one corner only the second sees. The matched ones must become map points at their true positions.
 #[test]
 fn epipolar_matches_become_wall_points() {
     let mut s = 21;
@@ -162,8 +160,7 @@ fn epipolar_matches_become_wall_points() {
     }
 }
 
-/// The descriptor angle of a floor point names the same world direction (east) from two cameras on
-/// opposite sides of it, where gravity's image direction would differ by 180 deg.
+/// A floor point's descriptor angle points the same way (east) from cameras on opposite sides of it. Gravity's direction in the image would differ by 180°.
 #[test]
 fn canonical_angle_is_a_fixed_floor_direction() {
     let target = [0.3, 1.2, 0.0];
@@ -182,9 +179,7 @@ fn canonical_angle_is_a_fixed_floor_direction() {
     }
 }
 
-/// Long lost, then a scene the map does not know (same floor, new descriptors), seen from 0.5 to the side
-/// at height `h`: re-seeds at the last x/y, keeping the old map as the stash. A view of both merges the
-/// new map back into the old frame: the pose snaps to truth and merged floor points sit at z = 0.
+/// Lost for long, then a new scene seen from 0.5 to the side at height `h`: a new map starts and the old one is stashed. Seeing both again merges them: the pose snaps back to truth and merged floor points sit at z = 0.
 fn reseed_then_merge(h: f32) {
     let (mut s, mut s2) = (11, 99);
     let a = world(&mut s);
@@ -195,7 +190,7 @@ fn reseed_then_merge(h: f32) {
     let (kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &a);
     slam.update(&kps, &desc, &sensor, f64::NAN, None);
     for _ in 0..REINIT_AFTER_LOST {
-        slam.update(&[], &[], &sensor, f64::NAN, None); // covered lens: cannot seed, stays Lost
+        slam.update(&[], &[], &sensor, f64::NAN, None); // Covered lens: can't start a map, stays Lost.
     }
     assert_eq!((slam.state, slam.reseeds), (State::Lost, 0));
     let truth = [0.5, 0.0, h];
@@ -223,8 +218,7 @@ fn merge_corrects_the_seed_scale() {
     reseed_then_merge(1.2);
 }
 
-/// A third of the corners sit on a 0.4-high platform (a stool top, a box). They are seeded as
-/// floor at first; walking must move them to their true height without losing the pose.
+/// A third of the corners sit on a 0.4-high platform (a stool, a box). They start as floor points; walking must move them to their true height without losing the pose.
 #[test]
 fn raised_points_get_their_true_height() {
     let mut s = 5;
@@ -242,7 +236,7 @@ fn raised_points_get_their_true_height() {
         assert_ne!(slam.state, State::Lost, "x {x}");
     }
     assert!(norm(sub(slam.c, [0.0, 0.0, 1.0])) < 0.05, "drift {:?}", slam.c);
-    // Confirmed points only: a floor hypothesis waits for 4 deg of parallax (late ones never get it here).
+    // Confirmed points only: a floor guess waits for 4° of angle between views.
     let on_platform: Vec<f32> = slam
         .map
         .iter()
@@ -274,8 +268,7 @@ fn relocalizes_after_a_jump() {
     assert!(norm(sub(slam.c, target)) < 0.02, "c {:?}", slam.c);
 }
 
-/// Most keypoints have a twin far away (repeating texture): globally ambiguous, so only a few
-/// match globally, but guided matching from that weak pose confirms it.
+/// Most keypoints have a far-away twin (repeating texture), so few match globally. Guided matching from that weak pose must still confirm it.
 #[test]
 fn relocalizes_from_a_weak_global_match() {
     let mut s = 21;
@@ -318,7 +311,7 @@ fn few_agreeing_matches_are_not_normal() {
     let mut slam = Slam::new(K);
     let (mut kps, desc) = observe(&slam, &sensor, [0.0, 0.0, 1.0], &w);
     slam.update(&kps, &desc, &sensor, f64::NAN, None);
-    // All but 30 keypoints moved 20 px in scattered directions: they still match, but agree on no pose.
+    // All but 30 keypoints moved 20 px in random directions: they still match, but agree on no pose.
     for (i, k) in kps.iter_mut().enumerate().skip(30) {
         let a = i as f32 * 2.4;
         (k.x, k.y) = (k.x + 20.0 * a.cos(), k.y + 20.0 * a.sin());
@@ -345,8 +338,7 @@ fn never_relocalizes_below_the_floor() {
     assert!(slam.c[2] > 0.0);
 }
 
-/// Tiles repeat every 0.4: a one-tile shift explains every match. Relocalization must end
-/// Lost or at the true pose, never shifted.
+/// Tiles repeat every 0.4, so a one-tile shift explains every match. Recovery must end Lost or at the true pose, never shifted.
 #[test]
 fn repeating_tiles_never_snap_one_tile_over() {
     let mut s = 31;
@@ -380,7 +372,7 @@ fn blurred_frames_keep_the_map() {
     slam.update(&kps, &desc, &sensor, f64::NAN, None);
     slam.update(&kps, &desc, &sensor, f64::NAN, None);
     let before = slam.map_len();
-    // Blur: only the corners in a band of the image survive, enough to stay Normal for longer than MAX_MISSES.
+    // Blur: only corners in a band of the image survive, enough to stay Normal longer than MAX_MISSES.
     let (few, fd): (Vec<_>, Vec<_>) = kps.iter().zip(&desc).filter(|(k, _)| k.y > 420.0).map(|(k, d)| (*k, *d)).unzip();
     for _ in 0..2 * MAX_MISSES {
         slam.update(&few, &fd, &sensor, f64::NAN, None);
@@ -402,7 +394,7 @@ fn guided_matching_skips_ambiguous_neighbours() {
     };
     let unique = matched(&slam, &kps, &desc).len();
     assert!(unique > 100, "{unique}");
-    // A twin of keypoint 0 a few pixels away (a repeating tile corner): that map point must not match.
+    // A twin of keypoint 0 a few pixels away (repeating tile corner): that map point must not match.
     kps.push(Keypoint { x: kps[0].x + 6.0, ..kps[0] });
     desc.push(desc[0]);
     let m = matched(&slam, &kps, &desc);

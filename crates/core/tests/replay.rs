@@ -1,15 +1,8 @@
-//! Replays a phone recording (camera.html?record=1, server started with OPSIS_RECORD=1)
-//! through the CPU front end and the same `track()` the browser uses. M01 V1.
-//!   $env:OPSIS_REPLAY="recordings/<session>"; cargo test --release --test replay -- --ignored --nocapture
-//! OPSIS_REPLAY_FOV overrides the recorded field of view (to compare FOV guesses offline).
-//! OPSIS_REPLAY_END keeps only the first N frames (to cut a bad tail).
-//! OPSIS_REPLAY_OCCLUDE=a..b blacks out forward frames a..b-1 (M01 V3: lost, then recovery on uncover).
-//! OPSIS_REPLAY_SEED=n sets the RANSAC seed (judge a change over several: `tools/replay-seeds.ps1`).
-//! OPSIS_REPLAY_MAX_ERR=m fails the test if the closure gap or the forward z spread (max - min, true height
-//! is constant on a walk) exceeds m units (M01 V1 pass/fail).
-//! The frames play forward then backward, and the pose at the first tracked frame is compared on both
-//! passes. Closure only: errors symmetric in both directions (FOV, scale) cancel, and the way back
-//! re-tracks the forward map. The forward z range (true height is constant) catches some of those.
+//! Replays a phone recording (`camera.html?record=1`) through the same `track()` the browser uses.
+//! Run: `$env:OPSIS_REPLAY="recordings/<session>"; cargo test --release --test replay -- --ignored --nocapture`
+//! Options (env vars, prefix OPSIS_REPLAY_): FOV, END (first N frames), OCCLUDE=a..b (black frames), SEED, MAX_ERR (fail above this error), REVERSE, SHIFT, PITCH, BORN.
+//! Frames play forward then backward; the first tracked pose is compared on both passes.
+
 use std::time::Instant;
 use opsis_core::geom::{accel_in_camera, camera_from_orientation};
 use opsis_core::image::{Gray, pyramid};
@@ -23,26 +16,24 @@ fn replay() {
     // Relative paths resolve from the repo root: cargo runs tests from the crate dir.
     let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join(std::env::var("OPSIS_REPLAY").expect("set OPSIS_REPLAY to a recordings/<session> dir"));
     let meta = std::fs::read_to_string(dir.join("meta.csv")).expect("meta.csv");
-    // Columns: index, w, h, alpha, beta, gamma, fov[, capture time ms[, ax, ay, az]]. Recordings made before the
-    // capture index was sent are in upload order, which can differ from capture order.
+    // Columns: index, w, h, alpha, beta, gamma, fov, then optional capture time (ms) and ax, ay, az. Old recordings may be in upload order, not capture order.
     let mut rows: Vec<Vec<f32>> = meta.lines().map(|l| l.split(',').map(|v| v.parse().unwrap()).collect()).collect();
     rows.sort_by(|a, b| a[0].total_cmp(&b[0]));
-    // OPSIS_REPLAY_REVERSE=1: the first pass runs from the last frame (fresh map there). Path dependence:
-    // zratio (end/start z of the first pass) times the reverse run's zratio is 1 for real height changes.
+    // OPSIS_REPLAY_REVERSE=1 starts from the last frame. A real height change gives forward zratio × reverse zratio = 1.
     if std::env::var("OPSIS_REPLAY_REVERSE").is_ok_and(|v| v == "1") {
         rows.reverse();
     }
     let env = |k: &str| std::env::var(k).ok().map(|v| v.parse::<f32>().expect(k));
     rows.truncate(env("OPSIS_REPLAY_END").map_or(rows.len(), |n| n as usize));
     let fov = env("OPSIS_REPLAY_FOV");
-    // Constant offset added to beta (degrees): offline sensor-pitch bias sweep.
+    // Constant offset added to beta (degrees), to test a sensor pitch bias.
     for r in rows.iter_mut() {
         r[4] += env("OPSIS_REPLAY_PITCH").unwrap_or(0.0);
     }
-    // Sensor angles taken `shift` frames later (interpolated; negative = earlier): offline sensor-delay sweep.
+    // Sensor angles taken `shift` frames later (negative = earlier), to test a sensor delay.
     if let Some(shift) = env("OPSIS_REPLAY_SHIFT") {
         let src = rows.clone();
-        let wrap = |d: f32| (d + 540.0).rem_euclid(360.0) - 180.0; // alpha crosses 0/360
+        let wrap = |d: f32| (d + 540.0).rem_euclid(360.0) - 180.0; // alpha wraps at 0/360.
         for (n, r) in rows.iter_mut().enumerate() {
             let p = (n as f32 + shift).clamp(0.0, (src.len() - 1) as f32);
             let (i, f) = (p.floor() as usize, p.fract());
@@ -63,8 +54,7 @@ fn replay() {
     let mut slam: Option<Slam> = None;
     let (mut start, mut back, mut last, mut path, mut zr) = (None, None, None, 0.0f32, (f32::MAX, f32::MIN));
     let (mut states, mut ms_sum, mut ms_max) = ([0usize; 4], 0.0f64, 0.0f64);
-    // Forward pose per frame, and |forward - backward| where both passes tracked it as Normal: a consistency
-    // check, not accuracy (the way back re-tracks the forward map), but a wrong pose shows as a large gap.
+    // Gap between forward and backward poses where both are Normal. It checks consistency, not accuracy, but a wrong pose shows as a big gap.
     let mut fwd: Vec<Option<[f32; 3]>> = vec![None; rows.iter().map(|r| r[0] as usize + 1).max().unwrap_or(0)];
     let mut gaps: Vec<f32> = Vec::new();
     let seed = std::env::var("OPSIS_REPLAY_SEED").ok().map(|v| v.parse::<u32>().expect("OPSIS_REPLAY_SEED"));
@@ -87,9 +77,9 @@ fn replay() {
         });
         let threshold = cfg.fast_threshold;
         let t0 = Instant::now();
-        // Optional columns: capture time (ms), then gravity-free device acceleration (recordings since IMU capture).
+        // Optional columns: capture time (ms), then acceleration without gravity (newer recordings).
         let t = r.get(7).map_or(f64::NAN, |&t| t as f64);
-        // shortcut: recordings are portrait (screen angle 0); record the angle if landscape replays are needed.
+        // shortcut: recordings are portrait (screen angle 0); record the angle to replay landscape.
         let accel = r.get(8..11).map(|a| accel_in_camera([a[0], a[1], a[2]], 0.0)).filter(|a| a.iter().all(|v| v.is_finite()));
         let kps = track(&rb, &mut cfg, Some(s), &camera_from_orientation(r[3], r[4], r[5], 0.0), t, accel, true);
         let ms = t0.elapsed().as_secs_f64() * 1e3;
@@ -119,7 +109,7 @@ fn replay() {
             }
         }
         if let Some(cut) = env("OPSIS_REPLAY_BORN") {
-            // Matches by map point age: born before frame `cut` (slam frame count) vs after, inliers/all.
+            // Matches split by map point age (born before frame `cut` or after): inliers / all.
             let c = |early: bool, inl: bool| s.matched_born.iter().filter(|&&(b, ok)| ((b as f32) < cut) == early && (!inl || ok)).count();
             print!("born<{cut} {}/{} later {}/{} | ", c(true, true), c(true, false), c(false, true), c(false, false));
         }
@@ -154,7 +144,7 @@ fn replay() {
     gaps.sort_by(f32::total_cmp);
     let q = |p: f32| gaps.get(((gaps.len() as f32 * p) as usize).min(gaps.len().saturating_sub(1))).copied().unwrap_or(f32::NAN);
     println!("fwd/back gap on {} frames Normal both ways: median {:.3} p95 {:.3} max {:.3}", gaps.len(), q(0.5), q(0.95), q(1.0));
-    // One line per run for tools/replay-seeds.ps1.
+    // One summary line per run, read by tools/replay-seeds.ps1.
     let zratio = match (start, last) {
         (Some((_, a)), Some(b)) => b[2] / a[2],
         _ => f32::NAN,

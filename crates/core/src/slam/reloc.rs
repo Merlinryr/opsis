@@ -1,10 +1,7 @@
 use super::*;
 
 impl Slam {
-    /// Lost: match against the whole map (ratio test, so repeating tiles cannot snap the pose one tile over),
-    /// then confirm with guided matching from the candidate pose, whose result alone decides the state.
-    /// Global matches agree only 13-21% even when right, so a weak global result is enough to try the
-    /// confirmation: after a blackout on tiles they gave 6-15 inliers of ~200, some near the true pose.
+    /// Recovery when lost: match against the whole map, then confirm by guided matching from the candidate pose. Only the confirmation decides the state. Global matches agree weakly even when right, so a weak result is enough to try.
     pub(super) fn relocalize(&mut self, kps: &[Keypoint], desc: &[Descriptor], sensor: &M3) -> (Vec<(usize, Guided)>, Vec<(usize, usize)>, V3, f32, Vec<bool>) {
         let (guided, matches, c, yaw, inl) = self.solve(kps, desc, sensor, true);
         if inl.iter().filter(|&&b| b).count() < LIMITED_INLIERS / 2 {
@@ -17,17 +14,12 @@ impl Slam {
         out
     }
 
-    /// Normal quality, from `self.c`: the bar to leave Lost or to merge into the stash. A camera under the
-    /// floor (z = 0) or a height jump is a wrong pose however many inliers (room replay: 26 units away at
-    /// z -2.56 with 43 inliers; 20 units away at z 4-7 confirmed 13%). The height bound also bounds the
-    /// stash merge scale.
+    /// Normal quality from the current pose: needed to leave Lost or to merge into the stash. A camera below the floor or a big height jump is a wrong pose, however many inliers.
     pub(super) fn confirmed(&self, inliers: usize, matches: usize, c: V3) -> bool {
         c[2] > 0.0 && (c[2] - self.c[2]).abs() <= MAX_RELOC_DZ && inliers >= NORMAL_INLIERS && inliers * 8 >= matches
     }
 
-    /// Relocalize against the stash; on a confirmed hit it becomes the map again. `keep`: the current pose is
-    /// good, so the current map is carried into the stash frame (similarity: every seed assumed
-    /// `CAMERA_HEIGHT`, so the maps differ in scale by the height ratio) and appended.
+    /// Recover against the stash; on success it becomes the map again. `keep`: the current pose is good, so the current map is rescaled into the stash and appended.
     pub(super) fn try_stash(&mut self, kps: &[Keypoint], desc: &[Descriptor], sensor: &M3, keep: bool) -> bool {
         if self.stash.is_empty() {
             return false;
@@ -40,7 +32,7 @@ impl Slam {
             return false;
         }
         for (&(mi, _), _) in matches.iter().zip(&inl).filter(|(_, ok)| **ok) {
-            self.map[mi].seen = self.frame; // the restored points must not be first to go on eviction
+            self.map[mi].seen = self.frame; // Restored points must not be the first evicted.
         }
         let mut current = std::mem::take(&mut self.stash);
         if keep {
@@ -80,8 +72,7 @@ impl Slam {
             .collect()
     }
 
-    /// RANSAC over (position, yaw) from the current pose: `iters` 2-point samples, each solved with
-    /// `steps` Gauss-Newton steps (several when the start pose is far, e.g. relocalizing).
+    /// RANSAC over (position, yaw): `iters` random 2-point samples, each refined by `steps` Gauss-Newton steps (several when starting far away, e.g. recovering).
     pub(super) fn ransac(&mut self, pairs: &[Pair], sensor: &M3, iters: usize, steps: usize) -> (V3, f32, Vec<bool>) {
         let (c0, yaw0) = (self.c, self.yaw);
         let mut best = (c0, yaw0, self.inliers(pairs, sensor, c0, yaw0));
@@ -94,7 +85,7 @@ impl Slam {
             let r = self.rotation(sensor, yaw0);
             let (di, dj) = (mulv(&r, pairs[i].1), mulv(&r, pairs[j].1));
             if i == j || dot(di, dj) > 0.9994 {
-                continue; // same or near-parallel rays (< 2 deg) constrain nothing
+                continue; // Rays almost parallel (< 2°) tell nothing.
             }
             let mut hyp = Some((c0, yaw0));
             for _ in 0..steps {
@@ -119,7 +110,7 @@ impl Slam {
     }
 }
 
-/// Residual per pair: world ray x (X - C) = 0, scaled by 1/|X - C| so every pair weighs as an angle.
+/// Error per pair: cross product of the world ray and (X - C), divided by the distance so every pair counts as an angle.
 pub fn step(pairs: &[Pair], sensor: &M3, c0: V3, yaw0: f32) -> Option<(V3, f32)> {
     if pairs.len() < 2 {
         return None;
@@ -132,7 +123,7 @@ pub fn step(pairs: &[Pair], sensor: &M3, c0: V3, yaw0: f32) -> Option<(V3, f32)>
         let w = 1.0 / norm(e).max(1e-6);
         let res = scale(cross(d, e), w);
         let dyaw = scale(cross(cross([0.0, 0.0, 1.0], d), e), w);
-        // d/dC of d x (X - C) is -[d]x; rows of the 3x4 Jacobian.
+        // Derivative of d × (X - C) by C: rows of the 3×4 Jacobian.
         let jc = [[0.0, d[2], -d[1]], [-d[2], 0.0, d[0]], [d[1], -d[0], 0.0]];
         for row in 0..3 {
             let j = [jc[row][0] * w, jc[row][1] * w, jc[row][2] * w, dyaw[row]];
@@ -145,7 +136,7 @@ pub fn step(pairs: &[Pair], sensor: &M3, c0: V3, yaw0: f32) -> Option<(V3, f32)>
         }
     }
     for (i, row) in a.iter_mut().enumerate() {
-        row[i] += 1e-6; // keeps degenerate samples solvable
+        row[i] += 1e-6; // Keeps degenerate samples solvable.
     }
     let dx = geom::solve(a, b)?;
     Some((add(c0, [dx[0], dx[1], dx[2]]), yaw0 + dx[3]))

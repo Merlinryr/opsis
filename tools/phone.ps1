@@ -1,12 +1,12 @@
-# Phone testing: serve examples/ + pkg/ locally and expose them on a temporary public HTTPS URL
-# (Cloudflare quick tunnel; HTTPS is required for WebGPU on phones). Prints a QR code. Ctrl+C stops both.
-# -Record: accept camera.html?record=1 uploads into recordings/ (for the replay test).
+# Phone testing: serves examples/ and packages/ and exposes them on a temporary public HTTPS URL (Cloudflare tunnel; phones need HTTPS for the camera).
+# Prints a QR code. Ctrl+C stops everything.
+# -Record: save camera.html?record=1 uploads into recordings/ for the replay test.
 param([switch]$Record)
 if ($Record) { $env:OPSIS_RECORD = "1" }
 $port = if ($env:PORT) { $env:PORT } else { 8085 }
 Set-Location (Join-Path $PSScriptRoot "..")
 
-# Shells opened before the winget install don't have cloudflared on PATH yet.
+# Shells opened before installing cloudflared don't have it on PATH yet.
 $cf = (Get-Command cloudflared -ErrorAction SilentlyContinue).Source
 if (-not $cf) { $cf = "${env:ProgramFiles(x86)}\cloudflared\cloudflared.exe" }
 if (-not (Test-Path $cf)) { throw "cloudflared not found: winget install Cloudflare.cloudflared" }

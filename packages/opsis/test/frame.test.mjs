@@ -6,7 +6,7 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
 const mul = (M, v) => [0, 1, 2, 3].map((i) => M[i] * v[0] + M[4 + i] * v[1] + M[8 + i] * v[2] + M[12 + i] * v[3]);
 const close = (a, b, eps = 1e-5) => assert.ok(Math.abs(a - b) < eps, `${a} vs ${b}`);
 
-// Tracker output for a camera at height 1, CV axes (x right, y down, z forward), Z-up world.
+// Fake tracker output: a camera 1 unit above the floor, in tracker axes (world z up, camera y down).
 function frame(yaw, pitch, roll) {
   const fwd = [Math.sin(yaw) * Math.cos(pitch), Math.cos(yaw) * Math.cos(pitch), -Math.sin(pitch)];
   const r0 = [Math.cos(yaw), -Math.sin(yaw), 0], d0 = cross(fwd, r0);

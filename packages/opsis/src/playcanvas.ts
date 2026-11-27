@@ -1,13 +1,13 @@
 import type { Frame } from "./index.js";
 
-/** Structural subset of a PlayCanvas camera entity: no PlayCanvas import, any version. */
+/** Only the camera entity fields Opsis uses, so no PlayCanvas import is needed and any version works. */
 export interface PlayCanvasCameraEntity {
   setPosition(x: number, y: number, z: number): unknown;
   setRotation(x: number, y: number, z: number, w: number): unknown;
   camera: { fov: number; horizontalFov?: boolean } | null | undefined;
 }
 
-/** Drives a camera entity from `frame` for a viewport of `aspect`. Returns false while there is no pose. */
+/** Moves the camera entity to the frame's pose and matches its field of view to a viewport of `aspect`. Returns false while there is no pose yet. */
 export function updateCamera(entity: PlayCanvasCameraEntity, frame: Frame, aspect: number) {
   if (!entity.camera) throw new Error("opsis/playcanvas: entity has no camera component");
   if (!frame.pose) return false;

@@ -1,4 +1,4 @@
-//! Method: Rosten & Drummond, "Machine learning for high-speed corner detection", ECCV 2006.
+//! FAST-9 corners (Rosten & Drummond, ECCV 2006).
 
 use crate::image::Gray;
 
@@ -9,7 +9,7 @@ pub const RING: [(isize, isize); 16] = [
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Keypoint {
-    /// Level-0 pixel coordinates.
+    /// Full-resolution (level 0) pixel coordinates.
     pub x: f32,
     pub y: f32,
     pub level: u8,
@@ -21,8 +21,7 @@ fn has_arc9(mask: u32) -> bool {
     (0..9).fold(m, |acc, i| acc & (m >> i)) != 0
 }
 
-/// Score at (x, y): 0 if not a FAST-9 corner, else the summed excess over `t`
-/// of the ring pixels on the winning polarity. Cheap and identical on the GPU.
+/// Corner score at (x, y): 0 if not a FAST-9 corner, else how much the ring pixels exceed the threshold. Simple enough to give identical results on the GPU.
 pub fn score(img: &Gray, x: isize, y: isize, t: u8) -> u16 {
     let c = img.at(x, y) as i32;
     let t = t as i32;
@@ -56,7 +55,7 @@ pub fn score_map(img: &Gray, t: u8, border: usize) -> Vec<u16> {
     out
 }
 
-/// 3x3 non-maximum suppression. Ties go to the later pixel in scan order, so exactly one survives.
+/// Keeps only local maxima (3×3). Ties go to the later pixel, so exactly one survives.
 pub fn nms(map: &[u16], w: usize, h: usize) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for y in 1..h.saturating_sub(1) {
@@ -148,7 +147,7 @@ mod tests {
     #[test]
     fn arc9() {
         assert!(has_arc9(0b1_1111_1111));
-        assert!(has_arc9(0xF01F)); // bits 12..15 + 0..4 wrap around
+        assert!(has_arc9(0xF01F)); // Bits 12..15 and 0..4 wrap around.
         assert!(!has_arc9(0xF00F));
         assert!(!has_arc9(0b1111_1111));
         assert!(!has_arc9(0b0101_0101_0101_0101));
@@ -199,7 +198,7 @@ mod line_tests {
                 let mut g = Gray::new(96, 64);
                 for y in 0..64 {
                     for x in 0..96 {
-                        // anti-aliased ~1.5 px dark line through (0, 30)
+                        // Smooth ~1.5 px dark line through (0, 30).
                         let d = ((y as f32 - 30.0 - slope * x as f32) / (1.0 + slope * slope).sqrt()).abs();
                         g.data[y * 96 + x] = (200.0 - contrast * (1.25 - d).clamp(0.0, 1.0)) as u8;
                     }

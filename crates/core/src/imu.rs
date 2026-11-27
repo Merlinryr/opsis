@@ -1,7 +1,4 @@
-//! Loose IMU use (8th Wall style, not preintegration): camera-IMU time offset and metric scale,
-//! from the visual trajectory and the gravity-free accelerometer, matched after time alignment.
-//! Method: scale = |IMU acceleration|^2 / (IMU . visual acceleration), low-passed, at the
-//! lag of best correlation (8th Wall `Alignment` + `MetricScaleEstimator`, method inferred).
+//! Metric scale from the accelerometer, the simple way (like 8th Wall): compare how fast the camera accelerates in the map with what the sensor measures. The best time offset between the two is searched first.
 
 use crate::geom::{V3, add, dot, scale, sub};
 
@@ -18,16 +15,12 @@ fn accel(p: &[V3], dt: f32) -> Vec<V3> {
     (1..p.len().saturating_sub(1)).map(|i| scale(add(sub(p[i + 1], p[i]), sub(p[i - 1], p[i])), 1.0 / (dt * dt))).collect()
 }
 
-/// (lag in samples, metres per map unit) aligning `imu` (world-frame, gravity-free, m/s^2) to the visual
-/// positions `p` (map units), both sampled every `dt` s. Positive lag: the IMU sample `lag` steps later
-/// matches the frame. None without enough motion to tell, or with a non-positive fit.
-// shortcut: assumes uniform frame spacing; resample on timestamps if frame drops are common.
+/// Returns (offset in samples, metres per map unit) matching the sensor acceleration `imu` (world axes, no gravity, m/s²) to camera positions `p` (map units), both sampled every `dt` s. None without enough motion or a clear match.
+// shortcut: assumes evenly spaced frames; resample on timestamps if frames drop often.
 pub fn scale_and_lag(p: &[V3], imu: &[V3], dt: f32, max_lag: usize) -> Option<(isize, f32)> {
-    // 0.4 s moving average, twice (~1 Hz cut; 8th Wall uses 5 Hz). At 5 Hz (0.1 s) phone walks correlated
-    // at r 0.14-0.57 and the two estimates below spread 0.3-2.0 m/unit; at 0.4 s r 0.63-0.93 and they
-    // agree within ~15% around the true ~1.4 (replays 2026-11-26). In seconds: the rate is 30 or 60 fps.
+    // Smooth both signals with a 0.4 s moving average, twice. Shorter windows (5 Hz) gave scattered results on phone walks; 0.4 s agrees within ~15% (replays).
     let r = ((0.4 / dt).round() as usize).max(1);
-    let edge = max_lag.max(2 * r); // smoothing edges are biased
+    let edge = max_lag.max(2 * r); // Smoothing is biased at the edges.
     if p.len() != imu.len() || p.len() < 2 * edge + 4 * max_lag + 8 {
         return None;
     }
@@ -47,10 +40,8 @@ pub fn scale_and_lag(p: &[V3], imu: &[V3], dt: f32, max_lag: usize) -> Option<(i
     let lag = (-(max_lag as isize)..=max_lag as isize).max_by(|&x, &y| corr(x).0.total_cmp(&corr(y).0))?;
     let (c, va, vv, aa) = corr(lag);
     let n = pairs(lag).count() as f32;
-    // Needs real motion (mean |a| over ~0.3 m/s^2) and a clear correlation. va/vv: on the phone walks aa/va
-    // read 1.64-1.81 for ~1.4 (IMU noise left in aa), va/vv 1.36-1.55; the low-pass took out the vision
-    // jitter that biased va/vv low at 5 Hz.
-    // A best lag on the search edge is no peak (a 100 ms edge fit read 0.91 for ~1.4).
+    // Needs real motion (~0.3 m/s² on average) and a clear correlation. The velocity-based estimate is used: the acceleration-based one kept too much sensor noise.
+    // A best offset at the edge of the search range is not a real peak.
     (aa / n > 0.1 && c > 0.8 && va > 0.0 && lag.unsigned_abs() < max_lag).then(|| (lag, va / vv))
 }
 
@@ -71,7 +62,7 @@ mod tests {
             noise ^= noise << 5;
             (noise % 1000) as f32 / 1000.0 - 0.5
         };
-        // ~4 mm of tracking jitter on the vision track (in map units, 1 unit ~ 1.4 m), noise on the IMU too.
+        // ~4 mm of tracking noise on the camera path, and noise on the sensor too.
         let p: Vec<V3> = (0..n).map(|i| pos(i as f32 * dt)).map(|x| [x[0] + 0.006 * rnd(), x[1] + 0.006 * rnd(), x[2] + 0.006 * rnd()]).collect();
         let imu: Vec<V3> = (0..n).map(|i| scale(acc((i as isize - lag_true) as f32 * dt), s_true)).map(|a| [a[0] + 0.2 * rnd(), a[1] + 0.2 * rnd(), a[2]]).collect();
         let (lag, s) = scale_and_lag(&p, &imu, dt, 10).expect("estimate");

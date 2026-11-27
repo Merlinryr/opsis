@@ -1,5 +1,5 @@
-//! World frame = W3C DeviceOrientation earth frame: x east, y north, z up.
-//! Camera frame = computer vision: x right, y down, z forward (out of the back camera).
+//! World axes: x east, y north, z up (the W3C DeviceOrientation frame).
+//! Camera axes: x right, y down, z forward out of the back camera (computer-vision convention).
 
 pub type V3 = [f32; 3];
 pub type M3 = [[f32; 3]; 3];
@@ -50,28 +50,25 @@ pub fn rot_z(t: f32) -> M3 {
     [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
 }
 
-/// Camera axes (x right, y down, z forward, as the video shows them) in device axes (x right, y up, z out
-/// of the screen in portrait), for `screen_deg` = `screen.orientation.angle`: the image turns with the screen.
-// shortcut: sign of the landscape turn follows the W3C definition, not yet checked on a phone.
+/// Camera axes expressed in device axes (x right, y up, z out of the screen in portrait), for the screen rotation `screen_deg`. The video image turns with the screen.
+// shortcut: the landscape sign follows the W3C spec but hasn't been checked on a phone.
 pub fn camera_in_device(screen_deg: f32) -> M3 {
     mul(&rot_z(screen_deg.to_radians()), &[[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
 }
 
-/// `devicemotion.acceleration` (m/s^2, device axes) in camera axes. Negated: on the iPhone it correlates
-/// with the visual acceleration at r -0.1..0 as given and 0.43-0.57 negated (two walk replays, 2026-11-26).
-// shortcut: the sign is checked on iOS only; check an Android recording before shipping there.
+/// `devicemotion.acceleration` (m/s², device axes) in camera axes. It is negated: on the iPhone only the negated signal matched the camera's motion (walk replays).
+// shortcut: the sign is checked on iOS only; check an Android recording first.
 pub fn accel_in_camera(a: V3, screen_deg: f32) -> V3 {
     scale(mulv(&transpose(&camera_in_device(screen_deg)), a), -1.0)
 }
 
-/// Device frame to world is R = Rz(alpha) Rx(beta) Ry(gamma); the back camera flips y and z.
+/// Device to world is R = Rz(alpha) Rx(beta) Ry(gamma); the back camera flips y and z.
 pub fn camera_from_orientation(alpha: f32, beta: f32, gamma: f32, screen_deg: f32) -> M3 {
     let r = mul(&mul(&rot_z(alpha.to_radians()), &rot_x(beta.to_radians())), &rot_y(gamma.to_radians()));
     mul(&r, &camera_in_device(screen_deg))
 }
 
-/// Midpoint of the closest approach of rays c1 + s d1 and c2 + t d2 (unit directions), if both
-/// depths are positive and the rays nearly meet (gap under 2% of the nearer depth).
+/// Point where two rays come closest, if both are in front and they almost meet (gap under 2% of the depth).
 pub fn triangulate(c1: V3, d1: V3, c2: V3, d2: V3) -> Option<V3> {
     let w = sub(c1, c2);
     let b = dot(d1, d2);
@@ -122,13 +119,13 @@ mod tests {
 
     #[test]
     fn flat_screen_up_looks_down() {
-        // W3C spec: alpha = beta = gamma = 0 is the device flat on a table, screen up.
+        // W3C: all angles 0 means the phone lies flat on a table, screen up.
         assert!(close(gravity_in_camera(0.0, 0.0, 0.0), [0.0, 0.0, 1.0]));
     }
 
     #[test]
     fn upright_portrait_looks_level() {
-        // beta = 90: device upright, back camera level, gravity points down the image.
+        // beta = 90: phone upright, camera level, gravity points down the image.
         assert!(close(gravity_in_camera(0.0, 90.0, 0.0), [0.0, 1.0, 0.0]));
         assert!(close(gravity_in_camera(123.0, 90.0, 0.0), [0.0, 1.0, 0.0]), "heading must not change gravity");
     }

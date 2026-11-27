@@ -1,5 +1,4 @@
-//! Method: Rublee et al., "ORB", ICCV 2011, with orientation taken from gravity
-//! projected into the image instead of the intensity centroid.
+//! ORB descriptors (Rublee et al., ICCV 2011). The caller gives each keypoint's angle (world east for floor points); the image centroid is the fallback.
 
 use crate::fast::Keypoint;
 use crate::image::Gray;
@@ -7,10 +6,10 @@ use crate::image::Gray;
 pub type Descriptor = [u64; 4];
 
 pub const PATCH_RADIUS: f32 = 15.0;
-/// Detection border so every rotated test stays inside the level image.
+/// Keypoints this close to the edge are skipped, so every rotated test stays inside the image.
 pub const BORDER: usize = 16;
 
-// shortcut: seeded pseudo-random pattern, not a learned one; tune distinctiveness in phase 5.
+// shortcut: random fixed test pattern, not a learned one; tune it if matching needs more distinctiveness.
 pub fn pattern() -> [[i8; 4]; 256] {
     let mut s: u32 = 0x9E37_79B9;
     let mut uni = || {
@@ -38,14 +37,13 @@ pub fn gravity_angle(x: f32, y: f32, g: [f32; 3], fx: f32, fy: f32, cx: f32, cy:
     dy.atan2(dx)
 }
 
-/// Intensity-centroid angle over the patch disc (Rublee 2011). Used where gravity
-/// gives no stable in-image direction, e.g. rays pointing at the ground.
+/// Angle from the patch's brightness centroid (Rublee 2011). Used when no world direction is available.
 pub fn centroid_angle(level: &Gray, x: f32, y: f32) -> f32 {
     let r = PATCH_RADIUS as isize;
     let (cx, cy) = (x.round() as isize, y.round() as isize);
     let inside = cx >= r && cy >= r && cx + r < level.w as isize && cy + r < level.h as isize;
     let (mut m10, mut m01) = (0i64, 0i64);
-    // Row by row over the disc: slices when inside (hot path, ~4x faster), clamped reads at borders.
+    // Row by row over the disc: direct slices inside the image (~4x faster), clamped reads at the border.
     for v in -r..=r {
         let du = ((r * r - v * v) as f32).sqrt() as isize;
         let (mut sum, mut usum) = (0i64, 0i64);
@@ -68,12 +66,12 @@ pub fn centroid_angle(level: &Gray, x: f32, y: f32) -> f32 {
 pub fn describe(level: &Gray, pat: &[[i8; 4]; 256], x: f32, y: f32, angle: f32) -> Descriptor {
     let rot = angle - std::f32::consts::FRAC_PI_2;
     let (s, c) = rot.sin_cos();
-    // Pattern offsets stay within PATCH_RADIUS / sqrt 2 (+ rounding): patches clear of the edge skip the clamp.
+    // Patches far enough from the edge skip the bounds check.
     let r = PATCH_RADIUS + 1.0;
     let inside = x >= r && y >= r && x + r < level.w as f32 && y + r < level.h as f32;
     let px = |u: i8, v: i8| {
         let (u, v) = (u as f32, v as f32);
-        // Truncating v + 0.5 = round() here (negatives clamp to 0 either way); round() is a libm call on wasm.
+        // Truncating v + 0.5 rounds here; round() is a slow library call on wasm.
         let (xi, yi) = ((x + c * u - s * v + 0.5) as isize, (y + s * u + c * v + 0.5) as isize);
         if inside { level.data[yi as usize * level.w + xi as usize] } else { level.at(xi, yi) }
     };
@@ -170,15 +168,14 @@ mod tests {
         let (x, y) = (40.0, 50.0);
         let down = std::f32::consts::FRAC_PI_2;
         let a = describe(&img, &pat, x, y, down);
-        // Rotating the image 90 deg clockwise rotates gravity from +y to -x.
+        // Turning the image 90° clockwise turns gravity from +y to -x.
         let b = describe(&rimg, &pat, n as f32 - 1.0 - y, x, std::f32::consts::PI);
         let other = describe(&img, &pat, 60.0, 30.0, down);
         assert!(hamming(&a, &b) <= 16, "rotated distance {}", hamming(&a, &b));
         assert!(hamming(&a, &other) >= 64, "unrelated distance {}", hamming(&a, &other));
     }
 
-    /// Looking straight down, gravity angles flip across the principal point,
-    /// so gravity cannot orient ground-pointing rays: the centroid must.
+    /// Looking straight down, gravity points in opposite directions on either side of the image centre, so it can't orient floor points.
     #[test]
     fn ground_rays_need_centroid() {
         let g = [0.0, 0.0, 1.0];
@@ -188,7 +185,7 @@ mod tests {
 
         let (n, pat) = (96, pattern());
         let img = texture(n);
-        let rimg = rot90(&rot90(&img)); // the camera slid past the point: patch seen rotated 180 deg
+        let rimg = rot90(&rot90(&img)); // Seen from the other side: the patch is rotated 180°.
         let (x, y) = (40.0, 50.0);
         let (rx, ry) = (n as f32 - 1.0 - x, n as f32 - 1.0 - y);
         let a = describe(&img, &pat, x, y, centroid_angle(&img, x, y));

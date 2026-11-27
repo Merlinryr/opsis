@@ -34,7 +34,7 @@
     "wasm/opsis_bg.wasm"
   ],
   "scripts": {
-    "build": "tsc -p .",
+    "build": "tsc -p . --declaration false && tsc -p . --emitDeclarationOnly --removeComments false",
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {

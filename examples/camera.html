@@ -11,9 +11,9 @@
   import { debug } from "../packages/opsis/dist/debug.js";
 
   const params = new URLSearchParams(location.search), num = (k, d) => Number(params.get(k) ?? d);
-  const FOV = num("fov", 69), DELAY = num("delay", 0); // tune until the grid holds when turning (fast)
-  const RECORD = params.get("record") === "1"; // upload luma + sensors (server needs OPSIS_RECORD=1)
-  const REC_FRAMES = num("frames", 300); // ~0.2 MB per frame
+  const FOV = num("fov", 69), DELAY = num("delay", 0); // Tune both until the grid stays put when turning (fast).
+  const RECORD = params.get("record") === "1"; // Uploads grey images + sensor data (start the server with -Record).
+  const REC_FRAMES = num("frames", 300); // ~0.2 MB per frame.
   const status = document.getElementById("status");
 
   document.getElementById("start").onclick = async (e) => {
@@ -34,10 +34,10 @@
       const s = f.sensor, m = f.motion, { width: w, height: h } = f.image;
       hud.note(`REC ${acked}/${REC_FRAMES}${failed ? ` FAILED ${failed}` : ""}`);
       if (!s || sent >= REC_FRAMES) return;
-      // Same integer luma as the GPU pass, so the replay sees exactly what the tracker saw.
+      // Same grey conversion as the GPU, so the replay sees exactly what the tracker saw.
       const rgba = f.image.getContext("2d").getImageData(0, 0, w, h).data, luma = new Uint8Array(w * h);
       for (let i = 0; i < luma.length; i++) luma[i] = (77 * rgba[4 * i] + 150 * rgba[4 * i + 1] + 29 * rgba[4 * i + 2]) >> 8;
-      // Capture index + time travel with the frame: uploads can land out of order. Count acks, not sends.
+      // Uploads can arrive out of order, so each carries its index and time. Count server replies, not sends.
       fetch(`/rec?s=${rec}&i=${sent++}&t=${f.time}&w=${w}&h=${h}&a=${s.alpha}&b=${s.beta}&g=${s.gamma}&fov=${FOV}${m ? `&ax=${m.x}&ay=${m.y}&az=${m.z}` : ""}`, { method: "POST", body: luma })
         .then((r) => (r.ok ? acked++ : failed++), () => failed++);
     });

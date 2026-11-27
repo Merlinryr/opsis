@@ -16,7 +16,6 @@
   import { start } from "../packages/opsis/dist/index.js";
   import { updateCamera } from "../packages/opsis/dist/three.js";
 
-  // A-Frame is three.js underneath: drive its THREE camera with the three adapter.
   const scene = document.querySelector("a-scene"), cube = document.getElementById("cube").object3D, status = document.getElementById("status");
   let tap = null;
   scene.addEventListener("pointerdown", (e) => (tap = [e.clientX / innerWidth, e.clientY / innerHeight]));

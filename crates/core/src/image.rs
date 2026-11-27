@@ -18,7 +18,7 @@ impl Gray {
     }
 }
 
-/// BT.601 luma in 8-bit fixed point, from tightly packed RGBA.
+/// Grey level (BT.601) in 8-bit integer maths, from RGBA bytes.
 pub fn luma(rgba: &[u8], w: usize, h: usize) -> Gray {
     assert_eq!(rgba.len(), w * h * 4, "rgba size mismatch");
     let data = rgba
@@ -28,7 +28,7 @@ pub fn luma(rgba: &[u8], w: usize, h: usize) -> Gray {
     Gray { w, h, data }
 }
 
-/// Separable [1 4 6 4 1]/16 Gaussian.
+/// Gaussian blur [1 4 6 4 1]/16, horizontal then vertical.
 pub fn blur(img: &Gray) -> Gray {
     const K: [u32; 5] = [1, 4, 6, 4, 1];
     let pass = |src: &Gray, dx: isize, dy: isize| {

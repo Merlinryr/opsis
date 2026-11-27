@@ -1,5 +1,4 @@
-//! WebGL2 driver for the front-end passes. Fragment passes only (WebGL2 has no compute),
-//! RGBA8 targets only (float targets need an extension phones may lack).
+//! WebGL2 version of the front-end passes. Fragment shaders only (WebGL2 has no compute shaders), and RGBA8 textures only (float textures need an extension some phones lack).
 
 use crate::gpu::{Gpu, Pass};
 use opsis_core::image::Gray;
@@ -93,14 +92,14 @@ pub struct Tex {
 }
 
 type Pool = Rc<RefCell<Vec<(WebGlTexture, usize, usize, u32)>>>;
-const POOL_MAX: usize = 64; // beyond this (sizes from an old screen orientation) the oldest are freed
+const POOL_MAX: usize = 64; // Beyond this many (e.g. sizes from an old screen rotation), the oldest are freed.
 
 impl Drop for Tex {
     fn drop(&mut self) {
         let mut pool = self.pool.borrow_mut();
         pool.push((self.t.clone(), self.w, self.h, self.internal));
         if pool.len() > POOL_MAX {
-            self.gl.delete_texture(Some(&pool.remove(0).0)); // WebGL never frees textures on its own
+            self.gl.delete_texture(Some(&pool.remove(0).0)); // WebGL never frees textures by itself.
         }
     }
 }
@@ -142,7 +141,7 @@ impl Gl {
         Ok(Self { gl, progs, pool: Pool::default() })
     }
 
-    /// A `w` x `h` texture, left bound: from the pool when one matches (contents then undefined unless `data`).
+    /// A `w`×`h` texture, left bound. Reused from the pool when one matches; its contents are then undefined unless `data` is given.
     fn texture(&self, w: usize, h: usize, internal: u32, format: u32, data: Option<&[u8]>) -> Result<Tex, JsValue> {
         let gl = &self.gl;
         let reuse = {
@@ -185,7 +184,7 @@ impl Gpu for Gl {
 
     fn upload_canvas(&self, c: &OffscreenCanvas) -> Result<Tex, JsValue> {
         let t = self.texture(c.width() as usize, c.height() as usize, GL::RGBA8, GL::RGBA, None)?;
-        self.gl.tex_sub_image_2d_with_u32_and_u32_and_offscreen_canvas(GL::TEXTURE_2D, 0, 0, 0, GL::RGBA, GL::UNSIGNED_BYTE, c)?; // same size: no reallocation
+        self.gl.tex_sub_image_2d_with_u32_and_u32_and_offscreen_canvas(GL::TEXTURE_2D, 0, 0, 0, GL::RGBA, GL::UNSIGNED_BYTE, c)?; // Same size: no reallocation.
         Ok(t)
     }
 
@@ -224,7 +223,7 @@ impl Gpu for Gl {
         Ok(out)
     }
 
-    // shortcut: synchronous readPixels stalls the GPU; switch to PBO + fence (one-frame lag) for live camera.
+    // shortcut: readPixels waits for the GPU. Upgrade: async read with a pixel buffer and fence (one frame of lag).
     async fn read(&self, t: &Tex) -> Result<Vec<u8>, JsValue> {
         let gl = &self.gl;
         gl.framebuffer_texture_2d(GL::FRAMEBUFFER, GL::COLOR_ATTACHMENT0, GL::TEXTURE_2D, Some(&t.t), 0);

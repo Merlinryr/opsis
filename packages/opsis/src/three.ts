@@ -1,6 +1,6 @@
 import type { Frame } from "./index.js";
 
-/** Structural subset of `THREE.PerspectiveCamera`: no three.js import, any version. */
+/** Only the `THREE.PerspectiveCamera` fields Opsis uses, so no three.js import is needed and any version works. */
 export interface ThreeCamera {
   position: { fromArray(a: number[]): unknown };
   quaternion: { fromArray(a: number[]): unknown };
@@ -11,7 +11,7 @@ export interface ThreeCamera {
   updateProjectionMatrix(): void;
 }
 
-/** Drives `camera` from `frame` for a viewport of `aspect`. Returns false while there is no pose. */
+/** Moves `camera` to the frame's pose and matches its field of view to a viewport of `aspect`. Returns false while there is no pose yet. */
 export function updateCamera(camera: ThreeCamera, frame: Frame, aspect: number) {
   if (!frame.pose) return false;
   camera.position.fromArray(frame.pose.position);

@@ -1,10 +1,7 @@
 use super::*;
 
 impl Slam {
-    /// Off-floor points (walls, furniture) that floor seeding never makes: the newest keyframe's free
-    /// keypoints matched against earlier keyframes' (Hamming <= `EPI_DIST`, ratio test), kept if the two
-    /// rays meet (the epipolar check: `triangulate` rejects rays that miss by > 2% of depth), with enough
-    /// parallax, above the floor and within reach. They start on probation, like re-triangulated points.
+    /// Creates off-floor points (walls, furniture), which floor seeding never makes. Unmatched keypoints of the newest keyframe are matched with earlier keyframes, and kept if the two rays really meet. They also need enough angle between the views, a height above the floor and a reasonable distance.
     pub(super) fn epipolar_points(&mut self) {
         let Some((new, old)) = self.keyframes.split_last() else { return };
         let r2 = self.rotation(&new.sensor, new.yaw);

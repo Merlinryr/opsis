@@ -23,11 +23,11 @@ export interface StartOptions {
    */
   background?: "video" | "tracked";
   backend?: "auto" | "webgpu" | "webgl";
-  /** Degrees across the long image side. Browsers expose no intrinsics. */
+  /** Camera field of view in degrees, across the long image side. Browsers don't report it, so it is guessed. */
   fov?: number;
-  /** ms the motion sensor leads the camera. */
+  /** How many ms the motion sensor runs ahead of the camera. */
   sensorDelay?: number;
-  /** Processing size of the long side (px). */
+  /** Size of the long image side used for tracking, in px. */
   maxSide?: number;
   /** URL of `opsis_bg.wasm`, if a bundler does not resolve it. */
   wasm?: InitInput;
@@ -41,7 +41,7 @@ export interface Pose {
   /** World units: the camera height at start, until `Frame.scale` is known. */
   position: Vec3;
   quaternion: [number, number, number, number];
-  /** Camera to world, column-major, GL camera axes (x right, y up, looking down -z). */
+  /** Camera-to-world matrix, column-major, with GL camera axes (x right, y up, looking down -z). */
   matrix: Float32Array;
   viewMatrix: Float32Array;
 }
@@ -74,7 +74,7 @@ export const load = (wasm?: InitInput) => (ready ??= init(wasm === undefined ? u
 export class Frame {
   readonly state: TrackingState;
   readonly pose: Pose | null;
-  /** Metres per world unit, null until the IMU estimate converges. */
+  /** Metres per world unit, null until the motion sensor has seen enough movement. */
   readonly scale: number | null;
   readonly inliers: number;
   readonly mapSize: number;
@@ -89,10 +89,10 @@ export class Frame {
     readonly keypoints: Float32Array,
     /** The tracked pixels. Valid only during the callback: the canvas is reused. */
     readonly image: OffscreenCanvas,
-    /** Device orientation (W3C degrees) and gravity-free acceleration (m/s^2, device axes) used, `t`: sample time. */
+    /** Sensor samples used for this frame: orientation (degrees) and acceleration without gravity (m/s², device axes). `t`: sample time. */
     readonly sensor: { alpha: number; beta: number; gamma: number; t: number } | null,
     readonly motion: { x: number; y: number; z: number; t: number } | null,
-    /** ms: `copy` (video to canvas), `detect`, and its `split` [GPU encode, GPU wait + readback, track], then on WebGPU [GPU done, mapped, unpacked]. */
+    /** Timings in ms: `copy` (video to canvases), `detect`, and its `split` [GPU encode, GPU wait + read-back, track, then on WebGPU: GPU done, mapped, unpacked]. */
     readonly stats: { copy: number; detect: number; split: Float64Array; threshold: number },
   ) {
     const { width, height } = image;
@@ -106,7 +106,7 @@ export class Frame {
     this.pose = raw.length ? pose(this.r, this.c) : null;
   }
 
-  /** Image height visible in a viewport of this aspect, video drawn with `object-fit: cover`. */
+  /** Part of the image visible in a viewport of this aspect, with `object-fit: cover`: [width, height] in px. */
   private visible(aspect: number) {
     const { width, height } = this.intrinsics;
     const h = Math.min(height, width / aspect);
@@ -144,7 +144,7 @@ export class Frame {
   }
 }
 
-// Tracker world: x east, y north, z up; camera: x right, y down, z forward. Here: Y-up world, GL camera.
+// Converts the tracker's axes (world z up, camera y down) to the usual 3D-engine axes (world y up, camera y up).
 function pose(r: Float32Array, c: Float32Array): Pose {
   const col = (j: number, s: number) => [s * r[j], s * r[6 + j], -s * r[3 + j]];
   const [x, y, z] = [col(0, 1), col(1, -1), col(2, -1)];
@@ -181,7 +181,7 @@ const nearest = <T>(list: Sample<T>[], t: number) =>
 export function start(options: StartOptions = {}): Promise<Session> {
   const DOE = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> };
   const DME = DeviceMotionEvent as unknown as { requestPermission?: () => Promise<string> };
-  // iOS: both prompts must be requested synchronously in the gesture, before any await.
+  // iOS only shows the permission prompts if they are requested right away in the tap, before any await.
   const orientation = DOE.requestPermission?.() ?? Promise.resolve("granted");
   DME.requestPermission?.().catch(() => {});
   return run(options, orientation);
@@ -196,7 +196,7 @@ async function run(o: StartOptions, permission: Promise<string>): Promise<Sessio
   const webgpu = o.backend !== "webgl" && !!gpu && !!(await gpu.requestAdapter());
   if (o.backend === "webgpu" && !webgpu) throw new Error("WebGPU unavailable");
 
-  // Euler angles are singular in upright portrait, so frames take the nearest sample, not an interpolation.
+  // Orientation angles jump near upright portrait, so each frame takes the nearest sample instead of blending two.
   const orient: Sample<{ alpha: number; beta: number; gamma: number }>[] = [];
   const motion: Sample<{ x: number; y: number; z: number }>[] = [];
   const onOrient = (e: DeviceOrientationEvent) => {
@@ -231,10 +231,10 @@ async function run(o: StartOptions, permission: Promise<string>): Promise<Sessio
   if (o.levels) tracker.set_levels(o.levels);
   const k = maxSide / Math.max(video.videoWidth, video.videoHeight);
   const w = Math.round(video.videoWidth * k), h = Math.round(video.videoHeight * k);
-  // Two frames in flight, one canvas each: the next frame is copied and submitted while this one waits
-  // on the GPU. No willReadFrequently: it keeps the canvas on the CPU.
+  // Two frames in flight, one canvas each: the next frame is sent while this one waits for the GPU.
+  // No willReadFrequently: it would keep the canvas on the CPU.
   const slots = [0, 1].map(() => new OffscreenCanvas(w, h).getContext("2d")!);
-  // The pose belongs to a frame 1-2 frames old: the background shows that same frame, copied at full size with it.
+  // The pose is for a frame 1-2 frames old, so the background shows that same frame (copied at full size with it).
   const [vw, vh] = [video.videoWidth, video.videoHeight];
   const shown = tracked ? [0, 1].map(() => new OffscreenCanvas(vw, vh).getContext("2d")!) : [];
   const bgCtx = tracked && Object.assign(tracked, { width: vw, height: vh }).getContext("2d")!;
@@ -274,7 +274,7 @@ async function run(o: StartOptions, permission: Promise<string>): Promise<Sessio
       inFlight--;
     }
   };
-  // requestVideoFrameCallback never fires for some hidden videos: fall back to rAF.
+  // requestVideoFrameCallback never fires for some hidden videos: fall back to requestAnimationFrame.
   const next = () => ("requestVideoFrameCallback" in video && !vfcGaveUp ? video.requestVideoFrameCallback(frame) : requestAnimationFrame(frame));
   setTimeout(() => (vfcGaveUp = !gotVfc) && requestAnimationFrame(frame), 500);
   next();
@@ -318,7 +318,7 @@ async function run(o: StartOptions, permission: Promise<string>): Promise<Sessio
       document.removeEventListener("visibilitychange", onVisibility);
       for (const t of stream.getTracks()) (t.removeEventListener("ended", fail), t.stop());
       bg.remove();
-      // Frees after the in-flight detects resolve: wasm-bindgen objects must not be freed mid-call.
+      // Wait for running detects to finish: freeing the tracker mid-call would crash.
       const free = () => (inFlight ? setTimeout(free, 50) : tracker.free());
       free();
     },

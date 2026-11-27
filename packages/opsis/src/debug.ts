@@ -130,7 +130,7 @@ export function debug(session: Session, options: DebugOptions = {}): Debug {
     const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
     if (overlay.width !== W || overlay.height !== H) (overlay.width = W), (overlay.height = H);
     ctx.clearRect(0, 0, W, H);
-    // Corners live in tracked-image pixels; the image is shown with object-fit: cover.
+    // Corners are in tracked-image pixels; map them through the same cover crop as the background.
     const { width: w, height: h } = f.image, s = Math.max(W / w, H / h), ox = (W - w * s) / 2, oy = (H - h * s) / 2;
     if (layers.corners) {
       ctx.lineWidth = 1.5 * dpr;

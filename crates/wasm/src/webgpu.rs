@@ -1,5 +1,4 @@
-//! WebGPU driver (wgpu, `webgpu` backend only: ~26 KB gzip vs ~670 KB with its WebGL backend).
-//! Same fragment passes as `webgl`, written in WGSL; parity tests guard drift between the two.
+//! WebGPU version of the front-end passes, via wgpu (WebGPU backend only: ~26 KB instead of ~670 KB). Same passes as `webgl`, written in WGSL; the parity test catches differences.
 
 use crate::gpu::{Gpu, Pass};
 use opsis_core::image::Gray;
@@ -90,7 +89,7 @@ pub struct Tex {
     pool: Pool,
 }
 
-/// Textures freed by dropped `Tex`es, reused by size and format: the front end makes ~20 per frame.
+/// Textures from dropped `Tex` values, reused by size and format: the front end makes ~20 per frame.
 type Pool = Rc<RefCell<Vec<wgpu::Texture>>>;
 
 impl Drop for Tex {
@@ -98,7 +97,7 @@ impl Drop for Tex {
         let mut pool = self.pool.borrow_mut();
         pool.push(self.t.clone());
         if pool.len() > 64 {
-            pool.remove(0); // sizes from an old screen orientation: let the oldest go
+            pool.remove(0); // Sizes from an old screen rotation: let the oldest go.
         }
     }
 }
@@ -109,9 +108,9 @@ pub struct Wgpu {
     layout: wgpu::BindGroupLayout,
     pipes: [wgpu::RenderPipeline; 5],
     pool: Pool,
-    /// Passes recorded since the last read, submitted together: one submit per pass was ~26 per frame.
+    /// Passes recorded since the last read, sent together (one submit per pass was ~26 per frame).
     enc: RefCell<Option<wgpu::CommandEncoder>>,
-    /// Last `read_all` wait split, ms: [submit -> GPU work done, -> buffers mapped, -> unpacked].
+    /// Last `read_all` wait in ms: [until GPU done, until buffers mapped, until unpacked].
     pub wait_ms: std::cell::Cell<[f64; 3]>,
 }
 
@@ -247,7 +246,7 @@ impl Gpu for Wgpu {
             Pass::Fast(t, b) => (3, [0, 0], 0.0, t as i32, b as i32),
             Pass::Nms => (4, [0, 0], 0.0, 0, 0),
         };
-        // Matches WGSL struct U: size, dir, scale, t, border, pad.
+        // Same layout as the WGSL struct U: size, dir, scale, t, border, pad.
         let words: [u32; 8] = [src.w as u32, src.h as u32, dir[0] as u32, dir[1] as u32, scale.to_bits(), t as u32, border as u32, 0];
         let ubuf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -293,9 +292,9 @@ impl Gpu for Wgpu {
         Ok(self.read_all(std::slice::from_ref(t)).await?.remove(0))
     }
 
-    /// One submit and one wait for all textures: each separate map_async is a full GPU round trip.
+    /// One submit and one wait for all textures: each separate read is a full GPU round trip.
     async fn read_all(&self, ts: &[Tex]) -> Result<Vec<Vec<u8>>, JsValue> {
-        let row = |t: &Tex| (t.w * 4).next_multiple_of(256); // WebGPU copy rows must be 256-byte aligned
+        let row = |t: &Tex| (t.w * 4).next_multiple_of(256); // WebGPU copy rows must be 256-byte aligned.
         let mut enc = self.enc.take().unwrap_or_else(|| self.device.create_command_encoder(&Default::default()));
         let bufs: Vec<_> = ts
             .iter()

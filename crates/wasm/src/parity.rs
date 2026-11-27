@@ -49,9 +49,7 @@ pub async fn parity_webgpu() -> Result<String, JsValue> {
     parity(&Wgpu::new().await?, "webgpu").await
 }
 
-/// Per-pass parity: each GPU pass gets the CPU output of the previous stage, so one
-/// rounding difference cannot cascade. Then the full chain down to descriptors.
-/// Returns a report; first line is PASS or FAIL.
+/// Checks each GPU pass against the CPU version. Each pass gets the CPU result of the previous one, so one rounding difference can't snowball. Then the full chain is compared down to descriptors. The report's first line is PASS or FAIL.
 async fn parity<G: Gpu>(gl: &G, name: &str) -> Result<String, JsValue> {
     let (w, h, cfg) = (320, 240, FrontEnd::default());
     let rgba = test_frame(w, h);
@@ -63,7 +61,7 @@ async fn parity<G: Gpu>(gl: &G, name: &str) -> Result<String, JsValue> {
         lines.push(format!("{} {name}: {bad} (limit {limit})", if bad <= limit { "ok  " } else { "FAIL" }));
     };
 
-    // Through a canvas, as the camera page feeds it: checks upload_canvas against the CPU bytes.
+    // Goes through a canvas like the camera page does, to test the canvas upload too.
     let canvas = OffscreenCanvas::new(w as u32, h as u32)?;
     let ctx: web_sys::OffscreenCanvasRenderingContext2d = canvas.get_context("2d")?.ok_or("no 2d context")?.dyn_into()?;
     ctx.put_image_data(&web_sys::ImageData::new_with_u8_clamped_array(wasm_bindgen::Clamped(&rgba), w as u32)?, 0.0, 0.0)?;
@@ -99,7 +97,7 @@ async fn parity<G: Gpu>(gl: &G, name: &str) -> Result<String, JsValue> {
         check(format!("L{l} NMS alpha (blurred) mismatches"), alpha as u64, 0);
     }
 
-    // A +-1 downscale may move a few upper-level corners, so allow 1% of the keypoints.
+    // A ±1 difference in downscaling can move a few coarse-level corners, so allow 1% of keypoints.
     let gravity = |_: &fast::Keypoint| Some(std::f32::consts::FRAC_PI_2);
     let (gk, gd) = readback::features(&gl.front_end(&frame, &cfg, BORDER).await?.0, &cfg, gravity);
     let (ck, cd) = readback::features(&readback::cpu_levels(&cpu_levels, &cfg, BORDER), &cfg, gravity);

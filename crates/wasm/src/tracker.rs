@@ -19,20 +19,19 @@ pub struct Tracker {
     cfg: Cell<FrontEnd>,
     fov: f32,
     slam: RefCell<Option<Slam>>,
-    /// Last frame's split of `detect`: [front end incl. readback, track], ms.
+    /// Last `detect` timings in ms: [front end incl. read-back, track].
     split_ms: Cell<[f64; 3]>,
 }
 
 #[wasm_bindgen]
 impl Tracker {
-    /// WebGPU when `webgpu` is true, else WebGL2 on `canvas`. `fov_deg`: field of view across the long side.
+    /// WebGPU when `webgpu` is true, else WebGL2 on `canvas`. `fov_deg`: field of view across the long image side.
     pub async fn create(canvas: HtmlCanvasElement, webgpu: bool, fov_deg: f32) -> Result<Tracker, JsValue> {
         let backend = if webgpu { Backend::Gpu(Wgpu::new().await?) } else { Backend::Gl(Gl::new(&canvas)?) };
         Ok(Tracker { backend, cfg: Cell::new(FrontEnd::default()), fov: fov_deg, slam: RefCell::new(None), split_ms: Cell::new([0.0; 3]) })
     }
 
-    /// [GPU encode + submit, GPU wait + readback, track] ms of the last `detect`, then on WebGPU the wait
-    /// split [GPU work done, buffers mapped, unpacked].
+    /// Last `detect` timings in ms: [GPU encode + submit, GPU wait + read-back, track]. On WebGPU, then the wait split: [GPU done, buffers mapped, unpacked].
     pub fn split_ms(&self) -> Vec<f64> {
         let mut v = self.split_ms.get().to_vec();
         if let Backend::Gpu(g) = &self.backend {
@@ -41,7 +40,7 @@ impl Tracker {
         v
     }
 
-    /// Pyramid levels (diagnostic `?levels=`: how GPU wait scales with the passes and readback size).
+    /// Diagnostic: number of pyramid levels (to see how GPU time scales with it).
     pub fn set_levels(&self, n: usize) {
         let mut cfg = self.cfg.get();
         cfg.levels = n.clamp(1, 8);
@@ -64,11 +63,7 @@ impl Tracker {
         }
     }
 
-    /// `frame`: the camera image. Returns flat [x, y, level, score] per kept keypoint, level-0 pixels. `alpha`, `beta`, `gamma`:
-    /// W3C deviceorientation degrees for this frame, or NaN when there is no sensor (no tracking then).
-    /// `vision` false: sensor rotation only, no map (to tune FOV and sensor delay). `t`: capture time (ms).
-    /// `ax`, `ay`, `az`: `devicemotion.acceleration` (m/s^2, device axes), NaN when absent. `screen`:
-    /// `screen.orientation.angle` (degrees).
+    /// Tracks one camera frame. Returns [x, y, level, score] per kept keypoint, in full-size pixels. `alpha`, `beta`, `gamma`: device orientation in degrees, NaN without a sensor (then no tracking). `ax`, `ay`, `az`: acceleration (m/s², device axes), NaN if absent; `t`: capture time (ms); `screen`: screen rotation (degrees); `vision` false: sensor rotation only.
     #[allow(clippy::too_many_arguments)]
     pub async fn detect(&self, frame: OffscreenCanvas, alpha: f32, beta: f32, gamma: f32, screen: f32, t: f64, ax: f32, ay: f32, az: f32, vision: bool) -> Result<Vec<f32>, JsValue> {
         let (w, h) = (frame.width() as usize, frame.height() as usize);
@@ -80,10 +75,10 @@ impl Tracker {
         };
         let t1 = js_sys::Date::now();
         let kps = {
-            let mut slam = self.slam.borrow_mut(); // after the GPU await: never held across it
+            let mut slam = self.slam.borrow_mut(); // Borrowed after the GPU await, never across it.
             let sensor = camera_from_orientation(alpha, beta, gamma, screen);
             let k = Intrinsics::from_fov(w, h, self.fov);
-            // shortcut: a screen rotation (new image size) starts a new map; keep it by rotating the map instead.
+            // shortcut: rotating the screen (new image size) starts a new map. Upgrade: rotate the map instead.
             if slam.as_ref().is_some_and(|s| s.k.cx != k.cx) {
                 *slam = None;
             }
@@ -96,8 +91,7 @@ impl Tracker {
         Ok(kps.iter().flat_map(|k| [k.x, k.y, k.level as f32, k.score as f32]).collect())
     }
 
-    /// [state, inliers, map size, C(3), R camera-to-world row-major (9), f, cx, cy, metres per unit (NaN until known)];
-    /// empty before the first sensor frame. State: 0 initializing, 1 normal, 2 limited, 3 lost.
+    /// [state, inliers, map size, camera position (3), camera-to-world rotation row-major (9), f, cx, cy, metres per unit (NaN until known)]. Empty before the first sensor reading. State: 0 initializing, 1 normal, 2 limited, 3 lost.
     pub fn pose(&self) -> Vec<f32> {
         let slam = self.slam.borrow();
         let Some(s) = slam.as_ref() else { return Vec::new() };

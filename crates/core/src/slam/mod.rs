@@ -20,7 +20,7 @@ pub struct Intrinsics {
 }
 
 impl Intrinsics {
-    // shortcut: browsers expose no intrinsics; per-device table or calibration later (M01 risk).
+    // shortcut: browsers don't give camera intrinsics, so they are guessed from the field of view. Upgrade with a per-device table or calibration.
     pub fn from_fov(w: usize, h: usize, fov_deg: f32) -> Self {
         let f = 0.5 * w.max(h) as f32 / (0.5 * fov_deg.to_radians()).tan();
         Self { f, cx: 0.5 * w as f32 - 0.5, cy: 0.5 * h as f32 - 0.5 }
@@ -47,15 +47,14 @@ struct MapPoint {
     x: V3,
     desc: Descriptor,
     misses: u8,
-    /// Floor hypothesis not yet confirmed: seeding camera centre and world ray. Seen again with
-    /// parallax, the point is confirmed (inlier) or re-triangulated from the two rays (outlier).
+    /// Unconfirmed floor point: (camera centre, world ray) when first seen. Seen again from another angle, it is either confirmed or moved to where the two rays meet.
     seed: Option<(V3, V3)>,
-    /// Oldest first out when the map is full.
+    /// Frame it was last matched: the oldest go first when the map is full.
     seen: u32,
     born: u32,
-    /// Stable id: keyframes refer to points by it (map indices shift on cull and eviction).
+    /// Stable id used by keyframes (map indices change when points are removed).
     id: u32,
-    /// Pyramid level and distance of the `desc` view: predicts the level it appears at now.
+    /// Pyramid level and distance when described: predicts which level it shows up on now.
     level: u8,
     dist: f32,
     views: Vec<Descriptor>,
@@ -72,8 +71,7 @@ struct Keyframe {
 #[derive(Clone, Copy, PartialEq)]
 enum Guided {
     NoKeypoint,
-    /// Best descriptor over `MATCH_DIST`; true if that keypoint is within 3 px of the projection (the corner
-    /// was re-detected, its descriptor changed), false if not (the corner was not re-detected there).
+    /// Best match was too different. `true`: a corner was found within 3 px (it just looks different now); `false`: no corner there.
     TooFar(bool, u8),
     Ambiguous,
     Match(usize),
@@ -81,17 +79,17 @@ enum Guided {
 
 // shortcut: starting values, not tuned on real sequences; revisit in M01 phase 5.
 const CAMERA_HEIGHT: f32 = 1.0;
-const MIN_BELOW_HORIZON: f32 = 0.26; // sin(15 deg): depth error explodes near the horizon
+const MIN_BELOW_HORIZON: f32 = 0.26; // sin(15°): closer to the horizon, floor depth is too unreliable.
 const MAX_DEPTH: f32 = 4.0 * CAMERA_HEIGHT;
-const MIN_INIT_POINTS: usize = 100; // 40 started on blurry frames with a map too thin to track (phone replay)
-const MAX_MAP: usize = 3000; // 1500 filled by frame 60 on a 1.8 m walk (12-43-04). 3000: closure medians 0.004-0.041 -> 0.003-0.009 on the other takes over 5 seeds, lost 102 -> 73 on 10-51-41 (12-43-04 itself unchanged), track max +0-40%
+const MIN_INIT_POINTS: usize = 100; // Fewer points made a map too thin to track when the first frames were blurry.
+const MAX_MAP: usize = 3000; // 1500 filled up within 60 frames of a 1.8 m walk; 3000 tracks longer walks better (replays).
 const MAX_ADD: usize = 50;
 const MATCH_DIST: u32 = 64;
 const INLIER_PX: f32 = 4.0;
 const NORMAL_INLIERS: usize = 25;
 const LIMITED_INLIERS: usize = 15;
-const REINIT_AFTER_LOST: u32 = 90; // frames (~3 s) of failed relocalization: then re-seed, the old map kept as the stash
-const STASH_EVERY: u32 = 5; // tracked frames between relocalization tries against the stash (each is a global match)
+const REINIT_AFTER_LOST: u32 = 90; // ~3 s of failed recovery, then start a new map (the old one is kept as the stash).
+const STASH_EVERY: u32 = 5; // Frames between attempts to find the stashed map again.
 const RATIO: f32 = 0.8;
 const MAX_MISSES: u8 = 10;
 const MIN_PARALLAX_COS: f32 = 0.99756; // cos(4 deg)
@@ -99,22 +97,21 @@ const CELL: usize = 8; // px: one map point per cell when growing the map
 const RANSAC_ITERS: usize = 64;
 const MAX_RELOC_DZ: f32 = 0.5 * CAMERA_HEIGHT;
 const OLD: u32 = 50;
-const MAX_TURN_RATE: f32 = 1.22; // rad/s (70 deg/s, 8th Wall `maxGyroMagnitude`): no map upkeep above
-const FRAME_S: f32 = 1.0 / 30.0; // frame interval assumed when no capture time is given (unit tests, old recordings)
-// Frame-count thresholds (`REINIT_AFTER_LOST`, `KF_COOLDOWN`, `MAX_MISSES`) are tuned at 30 fps: they scale with
-// `Slam::rate` (1 at 30 fps, 2 at 60) so they keep their duration, and 30 fps runs stay identical.
-const SCALE_WINDOW_S: f32 = 5.0; // seconds of tracked motion per metric-scale estimate (150 frames at 30 fps, 300 at 60)
-const MAX_LAG_S: f32 = 0.1; // camera-IMU offset searched within +-0.1 s (8th Wall 0.5 s): the phone walks fit at 0-33 ms, and a 167 ms fit read 0.90 for ~1.4
-const SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.3..=3.0; // metres per unit: the unit is the camera height
-// Keyframes, from 8th Wall `MapBuilder`: cooldown 5 frames, >= 20 new points or < 120 map points, BA over 4.
+const MAX_TURN_RATE: f32 = 1.22; // 70°/s (as in 8th Wall): faster turns blur the image, so the map is not edited.
+const FRAME_S: f32 = 1.0 / 30.0; // Frame time assumed when none is given (unit tests, old recordings).
+// Frame-count limits are tuned at 30 fps and scaled by `Slam::rate` (2 at 60 fps), so they last the same time.
+const SCALE_WINDOW_S: f32 = 5.0; // Seconds of motion used for each metric-scale estimate.
+const MAX_LAG_S: f32 = 0.1; // Camera-to-motion-sensor delay searched within ±0.1 s (phone walks fit at 0–33 ms).
+const SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.3..=3.0; // Metres per map unit (1 unit = the starting camera height).
+// Keyframe rules, after 8th Wall: wait 5 frames, then add one on ≥ 20 new points, < 120 map points, or enough movement.
 const KF_COOLDOWN: u32 = 5;
 const KF_NEW_POINTS: usize = 20;
 const KF_LOW_MAP: usize = 120;
-const KF_BASELINE: f32 = 0.1 * CAMERA_HEIGHT; // or moved this far since the last keyframe (PTAM's distance rule)
+const KF_BASELINE: f32 = 0.1 * CAMERA_HEIGHT; // ...or after moving this far (PTAM's rule).
 const BA_WINDOW: usize = 4;
-const KF_PAIRS: usize = 3; // earlier keyframes paired with a new one (8th Wall `keyframePairProcessCount`)
-const EPI_DIST: u32 = 32; // Hamming, epipolar matches (8th Wall `EpipolarMatcher`)
-const MAX_VIEWS: usize = 3; // keyframe descriptors per point, for guided matching only (global: frame 191 jumps)
+const KF_PAIRS: usize = 3; // Earlier keyframes a new keyframe is matched against.
+const EPI_DIST: u32 = 32; // Max descriptor distance (Hamming) for matches between keyframes.
+const MAX_VIEWS: usize = 3; // Extra keyframe descriptors kept per point, for guided matching only (more let wrong recoveries through).
 
 pub struct Slam {
     pub k: Intrinsics,
@@ -126,11 +123,7 @@ pub struct Slam {
     pub state: State,
     pub inliers: usize,
     pub matches: usize,
-    /// Replay metric, cumulative: guided outcomes of in-view points older than `OLD` frames
-    /// (no keypoint near, best over `MATCH_DIST`, ratio-rejected, RANSAC outlier, inlier).
-    /// [5]: the too-far ones whose best candidate is within 3 px; [6] / [7]: with any keypoint (any level)
-    /// within 3 / 6 px; [8]: confirmed (not a floor guess); [9]: confirmed with no keypoint within 6 px.
-    /// Subsets of [1].
+    /// Replay statistics for points older than `OLD` frames, cumulative: [0] no corner near, [1] best match too different, [2] ambiguous, [3] RANSAC outlier, [4] inlier. [5]..[9] break [1] down further (printed by `replay.rs`).
     pub old: [u32; 10],
     lost_frames: u32,
     frame: u32,
@@ -142,18 +135,16 @@ pub struct Slam {
     next_id: u32,
     last_t: f64,
     frame_dt: f32,
-    /// Tracked frames since the last gap: (camera centre, world acceleration m/s^2, time s), for metric scale.
+    /// Recent tracked frames (camera centre, world acceleration m/s², time s) for the scale estimate.
     motion: Vec<(V3, V3, f32)>,
-    /// Metres per map unit and camera-to-IMU offset (ms), once the estimator has converged. Reported only:
-    /// nothing in the solve uses them.
+    /// Metres per map unit and camera-to-sensor delay (ms), once estimated. Reported only: tracking does not use them.
     pub metres_per_unit: Option<f32>,
     pub imu_lag_ms: Option<f32>,
-    /// The map from before the last re-seed, whose frame placed content lives in. Tried every `STASH_EVERY`
-    /// frames (and every lost frame); on a confirmed hit the current map is merged into it.
+    /// The previous map, kept after starting a new one, because placed content lives in its frame. Tracking keeps trying to find it again; on success the new map is merged into it.
     stash: Vec<MapPoint>,
     pub reseeds: u32,
     pub merges: u32,
-    /// Replay diagnostic: (birth frame, RANSAC inlier) of each match this frame.
+    /// Replay diagnostic: (birth frame, inlier?) for each match this frame.
     pub matched_born: Vec<(u32, bool)>,
 }
 
@@ -169,21 +160,17 @@ impl Slam {
         (FRAME_S / self.frame_dt).round().max(1.0) as u32
     }
 
-    /// RANSAC seed (replay: compare changes over several seeds, as the seed alone moves the results).
+    /// RANSAC random seed. Replays compare changes over several seeds, since the seed alone moves results.
     pub fn seed(&mut self, s: u32) {
-        self.rng = s.max(1); // xorshift stays at 0
+        self.rng = s.max(1); // xorshift gets stuck at 0.
     }
 
     pub fn keyframes(&self) -> usize {
         self.keyframes.len()
     }
 
-    /// Descriptor angle for a keypoint: the image direction of world +x (east, corrected by yaw) at that
-    /// pixel. Unlike gravity, which on the floor points to the camera's foot and turns as the camera walks
-    /// around a point, this direction depends only on the ray and the rotation. None above the floor band
-    /// (centroid there). Call after `orient` for this frame.
-    // shortcut: a point whose ray crosses the 15 deg band switches descriptor type and stops matching, and
-    // the angle follows the yaw estimate (drifts while Lost); give such points both descriptors if replays show it.
+    /// Angle used to orient a floor keypoint's descriptor: the direction of world east in the image at that pixel. Unlike gravity, it stays the same as the camera walks around the point, so matches survive. None above the floor band (those use the image-based angle). Call after `orient`.
+    // shortcut: a point crossing the 15° band switches angle type and stops matching. Give such points both descriptors if replays show it matters.
     pub fn canonical_angle(&self, x: f32, y: f32) -> Option<f32> {
         let below = -mulv(&self.r, self.k.ray(x, y))[2] > MIN_BELOW_HORIZON;
         let ax = mulv(&transpose(&self.r), [1.0, 0.0, 0.0]);
@@ -212,10 +199,9 @@ impl Slam {
         self.r = self.rotation(sensor, self.yaw);
     }
 
-    /// `t`: capture time in ms (NaN if unknown). `accel`: gravity-free acceleration in camera axes (m/s^2,
-    /// `devicemotion.acceleration` through `geom::camera_in_device`), None without it.
+    /// `t`: capture time in ms (NaN if unknown). `accel`: acceleration without gravity, in camera axes (m/s²), if the device has it.
     pub fn update(&mut self, kps: &[Keypoint], desc: &[Descriptor], sensor: &M3, t: f64, accel: Option<V3>) {
-        let dt = ((t - self.last_t).abs() as f32 * 1e-3).clamp(0.005, 0.2); // abs: replays also run backward
+        let dt = ((t - self.last_t).abs() as f32 * 1e-3).clamp(0.005, 0.2); // abs: replays also run backward.
         let dt = if dt.is_nan() { FRAME_S } else { dt };
         self.frame_dt = 0.9 * self.frame_dt + 0.1 * dt;
         self.last_t = t;
@@ -254,34 +240,24 @@ impl Slam {
             };
             self.old[b] += 1;
         }
-        // Limited also needs a quarter of the matches to agree: a few lucky inliers among many
-        // matches is a wrong pose (seen in the first replay). Normal needs an eighth: good Normal frames
-        // agree >= 16% on all replays, seeds and shifts; a relocalization 14 units off confirmed with 27/503.
-        // The map is seeded on the floor (z = 0): a camera under it is a wrong pose, however many inliers
-        // (room replay: relocalized 26 units away at z -2.56 with 43 guided inliers). Nor does the height
-        // jump while lost (room replay, frame 191: relocalized 20 units away at z 4-7, confirmed 13%).
+        // Sanity checks. Limited needs a quarter of the matches to agree and Normal an eighth: a few lucky inliers among many matches means a wrong pose. A camera below the floor, or a big height jump while lost, is also wrong (both seen in replays).
         self.state = match self.inliers {
             n if lost && self.confirmed(n, matches.len(), c) => State::Normal,
             _ if lost || c[2] <= 0.0 => State::Lost,
             n if n >= NORMAL_INLIERS && n * 8 >= matches.len() => State::Normal,
-            // Leaving Lost takes Normal quality: Lost -> Limited relocalizations were 1-8 units off on the
-            // covered-lens replay (2026-11-26) and then became the Lost "last pose".
+            // Leaving Lost needs Normal quality: weaker recoveries were often 1–8 units off (replay).
             n if !lost && n >= LIMITED_INLIERS && n * 4 >= matches.len() => State::Limited,
             _ => State::Lost,
         };
         if self.state == State::Lost {
-            // Keep the last pose and keep relocalizing, against the stash too. shortcut: a stash hit while lost
-            // drops the current map (no pose in it to align by); upgrade by aligning through older frames.
+            // Keep the last pose and keep trying to recover, against the stash too. shortcut: a stash hit while lost drops the current map.
             self.v = [0.0; 3];
             self.motion.clear();
             self.lost_frames += 1;
             if self.try_stash(kps, desc, sensor, false) {
                 return;
             }
-            // Long lost in a new place: re-seed from the floor, keeping the old map as the stash so returning
-            // to it merges back (a plain re-seed moved the origin ~1 m, covered-lens replay 2026-11-26). Only
-            // on frames that can seed: a covered lens just stays Lost. shortcut: one stash, always the oldest
-            // map (placed content lives in its frame); a second re-seed drops the current map.
+            // Lost for long in a new place: start a new map, keeping the old one as the stash so coming back merges them. A covered lens can't start a map, so it stays Lost. shortcut: only one stash is kept.
             if self.lost_frames >= REINIT_AFTER_LOST * self.rate() {
                 let old = std::mem::take(&mut self.map);
                 self.initialize(kps, desc);
@@ -317,8 +293,7 @@ impl Slam {
         for (&(mi, ki), &ok) in matches.iter().zip(&inl) {
             let mp = &mut self.map[mi];
             if ok {
-                // Latest view: descriptors drift with viewpoint; doubled re-matched old points on the replays
-                // (keeping up to 4 views gained little more and let a wrong relocalization through).
+                // Keep only the latest descriptor: appearance changes with viewpoint, and this doubled re-matched old points (replays).
                 (mp.desc, mp.level, mp.dist) = (desc[ki], kps[ki].level, norm(sub(mp.x, c)));
                 new_obs.push((mp.id, self.k.ray(kps[ki].x, kps[ki].y)));
             }
@@ -335,8 +310,7 @@ impl Slam {
                 }
             }
         }
-        // A miss counts only where a corner was detected nearby: blurred frames detect few corners and
-        // used to cull most of the map while still Normal (grey-floor replay: 1500 -> 806 points in 16 frames).
+        // Count a miss only where a corner was detected nearby. Otherwise blurry frames wiped most of the map (replay).
         let mut detected = vec![false; gw * gh];
         for (x, y) in kps.iter().filter_map(|k| cell(k.x, k.y)) {
             detected[y * gw + x] = true;
@@ -350,7 +324,7 @@ impl Slam {
             if !ok && !near_corner(x, y) {
                 continue;
             }
-            // Misses count at 30 Hz whatever the frame rate, so a point gets the same time to come back.
+            // Misses count at 30 Hz whatever the frame rate, so points get the same time to come back.
             mp.misses = if ok { 0 } else { mp.misses.saturating_add(tick as u8) };
             if ok {
                 mp.seen = self.frame;
@@ -358,8 +332,8 @@ impl Slam {
         }
         self.map.retain(|mp| mp.misses < MAX_MISSES);
         if self.map.len() > MAX_MAP - MAX_ADD {
-            // Full: evict the points seen longest ago so the map follows the camera (it used to freeze here).
-            self.map.sort_by(|a, b| b.seen.cmp(&a.seen)); // stable: unstable order shifted with struct size
+            // Map full: drop the points seen longest ago, so the map follows the camera.
+            self.map.sort_by(|a, b| b.seen.cmp(&a.seen)); // stable sort: keeps results identical across builds.
             self.map.truncate(MAX_MAP - MAX_ADD);
         }
         let room = MAX_MAP.saturating_sub(self.map.len()).min(MAX_ADD);
@@ -384,7 +358,7 @@ impl Slam {
 
     fn add_keyframe(&mut self, sensor: &M3, obs: Vec<(u32, V3)>, free: Vec<(V3, Descriptor, u8)>) {
         self.last_kf = self.frame;
-        // Redundant (8th Wall: >= 70% shared points) and close to the last one: keep the old one.
+        // Skip a keyframe that shares ≥ 70% of points with the last one and is close to it (8th Wall rule).
         if let Some(last) = self.keyframes.last() {
             let ids: HashSet<u32> = last.obs.iter().map(|o| o.0).collect();
             let shared = obs.iter().filter(|o| ids.contains(&o.0)).count();
@@ -399,7 +373,7 @@ impl Slam {
             }
             mp.views.push(mp.desc);
         }
-        // Only the window is ever read (BA, epipolar pairing): older keyframes are dropped, not culled.
+        // Only the last few keyframes are used, so older ones are dropped.
         if self.keyframes.len() == BA_WINDOW {
             self.keyframes.remove(0);
         }
@@ -421,7 +395,7 @@ impl Slam {
             .collect();
         if map.len() >= MIN_INIT_POINTS {
             (self.map, self.c, self.state, self.inliers, self.lost_frames, self.v) = (map, c, State::Normal, 0, 0, [0.0; 3]);
-            self.keyframes.clear(); // they refer to the old map's points
+            self.keyframes.clear(); // Keyframes point to the old map's points.
         }
     }
 
@@ -455,13 +429,13 @@ impl Slam {
             .collect()
     }
 
-    /// On tile grids the nearest wrong corner is often a close second (replays: wrong Normal poses).
+    /// Keeps the best descriptor only if clearly better than the second best: on tiles the wrong neighbouring corner is often close.
     fn match_guided(&self, kps: &[Keypoint], desc: &[Descriptor]) -> Vec<(usize, Guided)> {
         let radius: f32 = if self.state == State::Normal { 40.0 } else { 80.0 };
         let (r, c) = (self.r, add(self.c, self.v));
         let fe = crate::FrontEnd::default();
         let (ln_s, top) = (fe.scale.ln(), (fe.levels - 1) as f32);
-        // Keypoints bucketed in radius-sized cells: each map point scans 3x3 cells, not every keypoint.
+        // Bucket keypoints in cells so each map point only checks nearby ones.
         let (gw, gh) = ((2.0 * self.k.cx / radius) as usize + 1, (2.0 * self.k.cy / radius) as usize + 1);
         let bucket = |p: f32, n: usize| ((p / radius).max(0.0) as usize).min(n - 1);
         let mut grid = vec![Vec::new(); gw * gh];
@@ -474,8 +448,7 @@ impl Slam {
             .enumerate()
             .filter_map(|(mi, mp)| {
                 let (u, v) = self.k.project(&r, c, mp.x)?;
-                // Farther than when described -> smaller in the image -> found on a finer level (ORB-SLAM's
-                // scale prediction): other levels are skipped, they are the same corner at the wrong scale.
+                // A point farther than when described looks smaller, so it appears on a finer pyramid level. Other levels are skipped.
                 let lvl = (mp.level as f32 - (norm(sub(mp.x, c)) / mp.dist).ln() / ln_s).clamp(0.0, top);
                 let (xs, ys) = (bucket(u - radius, gw)..=bucket(u + radius, gw), bucket(v - radius, gh)..=bucket(v + radius, gh));
                 let near = |x: f32, y: f32, d: f32| move |&ki: &usize| (kps[ki].x - x).powi(2) + (kps[ki].y - y).powi(2) <= d * d;
@@ -486,7 +459,7 @@ impl Slam {
                         .filter(move |&ki| (kps[ki].level as f32 - lvl).abs() <= 1.0)
                         .map(|ki| (mp.views.iter().chain([&mp.desc]).map(|d| hamming(d, &desc[ki])).min().unwrap_or(u32::MAX), ki))
                 };
-                // No keypoint counts only where one could be detected: inside the image, off the border.
+                // "No corner" only counts where one could be detected: inside the image, away from the border.
                 let b = BORDER as f32;
                 let detectable = (b..2.0 * self.k.cx - b).contains(&u) && (b..2.0 * self.k.cy - b).contains(&v);
                 let Some((h, ki)) = candidates().min() else { return detectable.then_some((mi, Guided::NoKeypoint)) };
@@ -495,7 +468,7 @@ impl Slam {
                     let any = if d2 <= 9.0 { 3 } else if d2 <= 36.0 { 6 } else { 0 };
                     return Some((mi, Guided::TooFar((kps[ki].x - u).powi(2) + (kps[ki].y - v).powi(2) <= 9.0, any)));
                 }
-                // The runner-up skips the same corner found again (another pyramid level, a pixel or two away).
+                // Ignore the same corner found twice (another level, a pixel or two away) when picking the second best.
                 let twin = near(kps[ki].x, kps[ki].y, 3.0);
                 let second = candidates().filter(|c| !twin(&c.1)).map(|c| c.0).min().unwrap_or(u32::MAX);
                 Some((mi, if (h as f32) < RATIO * second as f32 { Guided::Match(ki) } else { Guided::Ambiguous }))
