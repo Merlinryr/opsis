@@ -26,8 +26,7 @@ try {
         if ($m) { $url = $m.Matches[0].Value + "/examples/" }
     }
     if (-not $url) { throw "no tunnel URL after 60 s, see $log" }
-    $url | npx --yes qrcode-terminal@0.12.0 # piped: the CLI ignores argv when stdin is not a TTY
-    "`n$url`nScan with the phone camera. Ctrl+C stops. Tunnel log: $log"
+    npx --yes -p qrcode-terminal@0.12.0 node tools/qr.mjs $url "http://localhost:$port/examples/" $log
     Wait-Process -Id $tunnel.Id
 } finally {
     Stop-Process -Id $tunnel.Id, $server.Id -ErrorAction SilentlyContinue

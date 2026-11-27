@@ -28,7 +28,9 @@
 
   document.getElementById("start").onclick = async (e) => {
     e.target.hidden = true;
-    const session = await start({ mount: document.getElementById("app") }).catch((err) => (status.textContent = err));
+    const session = await start({ mount: document.getElementById("app") }).catch((err) => void (status.textContent = err));
+    if (!session) return;
+    if (new URLSearchParams(location.search).has("debug")) import("../packages/opsis/dist/debug.js").then(({ debug }) => debug(session));
     // Pull model: Babylon renders in its own loop and reads the latest frame.
     engine.runRenderLoop(() => {
       const f = session.frame;

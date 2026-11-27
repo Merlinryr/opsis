@@ -44,7 +44,9 @@
 
   document.getElementById("start").onclick = async (e) => {
     e.target.hidden = true;
-    const session = await start({ mount: document.getElementById("app") }).catch((err) => (status.textContent = err));
+    const session = await start({ mount: document.getElementById("app") }).catch((err) => void (status.textContent = err));
+    if (!session) return;
+    if (new URLSearchParams(location.search).has("debug")) import("../packages/opsis/dist/debug.js").then(({ debug }) => debug(session));
     session.onFrame((f) => {
       const w = Math.round(innerWidth * devicePixelRatio), h = Math.round(innerHeight * devicePixelRatio), aspect = w / h;
       if (canvas.width !== w || canvas.height !== h || !depth) {

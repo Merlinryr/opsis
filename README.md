@@ -80,6 +80,8 @@ node tools/serve.mjs             # http://localhost:8081/examples/
 .\tools\phone.ps1                # HTTPS tunnel + QR code to test on a phone
 ```
 
+Add `?debug` to any example page for the on-screen HUD and benchmark panel (`opsis/debug`); `examples/camera.html` always shows it.
+
 Phone recordings (`camera.html?record=1` with `.\tools\phone.ps1 -Record`) replay offline through the same tracker: `$env:OPSIS_REPLAY="recordings/<session>"; cargo test --release --test replay -- --ignored --nocapture`.
 
 ## Status

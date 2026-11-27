@@ -2,116 +2,44 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>opsis camera</title>
-<style>
-  body { margin: 0; background: #000; color: #fff; font: 13px/1.4 ui-monospace, monospace; }
-  canvas#view { display: block; width: 100vw; height: auto; max-height: 100vh; object-fit: contain; }
-  #hud { position: fixed; top: 0; left: 0; margin: 0; padding: 6px 8px; background: #000a; white-space: pre; }
-  #start { position: fixed; inset: 0; margin: auto; width: 14em; height: 3em; font: inherit; font-size: 16px; }
-</style>
-<canvas id="view"></canvas>
-<pre id="hud">loading…</pre>
-<button id="start" hidden>Start camera</button>
+<link rel="stylesheet" href="style.css">
+<div id="app"></div>
+<p id="status">Tap Start. Params: ?backend=webgl ?fov=69 ?delay=0 ?vision=0 ?record=1 ?frames=300 ?levels=4</p>
+<button id="start">Start</button>
 <script type="module">
-  import { load, start } from "../packages/opsis/dist/index.js";
-  const $ = (id) => document.getElementById(id);
-  const hud = $("hud"), view = $("view");
-  const params = new URLSearchParams(location.search);
-  const FOV = Number(params.get("fov") ?? 69); // tune until the grid holds when turning
-  const DELAY = Number(params.get("delay") ?? 0); // ms the sensor leads the camera; tune until the grid holds when turning fast
-  const RECORD = params.get("record") === "1"; // ?record=1: upload luma + sensor angles (server needs OPSIS_RECORD=1)
-  const REC_FRAMES = Number(params.get("frames") ?? 300); // ?frames=N: recording length (5 s at 60 fps by default; ~0.2 MB per frame)
-  const LEVELS = Number(params.get("levels") ?? 0); // ?levels=n: diagnostic, pyramid levels (default 4)
-  const VISION = params.get("vision") !== "0"; // ?vision=0: sensor rotation only, to tune fov and delay over a fixed grid
-  const BACKEND = params.get("backend") ?? "auto";
-  const COLORS = ["#ff3b30", "#ffcc00", "#34c759", "#0a84ff"];
-  const HINT = { initializing: "initializing: tilt down at the floor" };
+  import { start } from "../packages/opsis/dist/index.js";
+  import { debug } from "../packages/opsis/dist/debug.js";
 
-  await load();
-  hud.textContent = `ready. Params: ?backend=webgl ?fov=${FOV} ?delay=${DELAY} ?vision=${+VISION}`;
-  $("start").hidden = false;
+  const params = new URLSearchParams(location.search), num = (k, d) => Number(params.get(k) ?? d);
+  const FOV = num("fov", 69), DELAY = num("delay", 0); // tune until the grid holds when turning (fast)
+  const RECORD = params.get("record") === "1"; // upload luma + sensors (server needs OPSIS_RECORD=1)
+  const REC_FRAMES = num("frames", 300); // ~0.2 MB per frame
+  const status = document.getElementById("status");
 
-  $("start").onclick = async () => {
-    $("start").hidden = true;
-    try {
-      const session = await start({ fov: FOV, sensorDelay: DELAY, vision: VISION, levels: LEVELS, backend: BACKEND });
-      const ctx = view.getContext("2d");
-      const ema = {}, smooth = (k, v) => (ema[k] = ema[k] === undefined ? v : 0.9 * ema[k] + 0.1 * v);
-      let last = performance.now(), anchor = null, tracked = 0, sent = 0, acked = 0, failed = 0;
-      const recSession = Date.now();
+  document.getElementById("start").onclick = async (e) => {
+    e.target.hidden = true;
+    status.hidden = true;
+    const session = await start({
+      mount: document.getElementById("app"),
+      fov: FOV, sensorDelay: DELAY, vision: params.get("vision") !== "0", levels: num("levels", 0), backend: params.get("backend") ?? "auto",
+    }).catch((err) => void ((status.hidden = false), (status.textContent = err)));
+    if (!session) return;
+    const hud = debug(session);
+    session.onError((err) => hud.note(`frame error: ${err}`));
+    if (!RECORD) return;
 
-      session.onFrame((f) => {
-        const { width: w, height: h } = f.image;
-        if (view.width !== w) (view.width = w), (view.height = h);
-        const s = f.sensor, m = f.motion;
-        if (RECORD && s && sent < REC_FRAMES) {
-          // Same integer luma as the GPU pass, so the replay sees exactly what the tracker saw.
-          const rgba = f.image.getContext("2d").getImageData(0, 0, w, h).data;
-          const luma = new Uint8Array(w * h);
-          for (let i = 0; i < luma.length; i++) luma[i] = (77 * rgba[4 * i] + 150 * rgba[4 * i + 1] + 29 * rgba[4 * i + 2]) >> 8;
-          // Capture index + time travel with the frame: uploads can land out of order. Count acks, not sends.
-          fetch(`/rec?s=${recSession}&i=${sent++}&t=${f.time}&w=${w}&h=${h}&a=${s.alpha}&b=${s.beta}&g=${s.gamma}&fov=${FOV}${m ? `&ax=${m.x}&ay=${m.y}&az=${m.z}` : ""}`, { method: "POST", body: luma })
-            .then((r) => (r.ok ? acked++ : failed++), () => failed++);
-        }
-
-        ctx.drawImage(f.image, 0, 0);
-        ctx.lineWidth = 2;
-        const k = f.keypoints;
-        for (let i = 0; i < k.length; i += 4) {
-          ctx.strokeStyle = COLORS[k[i + 2]];
-          ctx.beginPath();
-          ctx.arc(k[i], k[i + 1], 3 * 1.44 ** k[i + 2], 0, 2 * Math.PI);
-          ctx.stroke();
-        }
-        if (f.pose) {
-          const P = f.projectionMatrix(w / h), V = f.pose.viewMatrix;
-          const mul = (M, [x, y, z]) => [0, 1, 2, 3].map((i) => M[i] * x + M[4 + i] * y + M[8 + i] * z + M[12 + i]);
-          const project = (X) => {
-            const [x, y, , cw] = mul(P, mul(V, X));
-            return cw > 0.05 ? [(x / cw + 1) * w / 2, (1 - y / cw) * h / 2] : null;
-          };
-          const line = (A, B, n = 1) => {
-            for (let i = 0; i < n; i++) {
-              const lerp = (t) => A.map((a, j) => a + (B[j] - a) * t);
-              const u = project(lerp(i / n)), v = project(lerp((i + 1) / n));
-              if (u && v) (ctx.moveTo(...u), ctx.lineTo(...v));
-            }
-          };
-          // Floor grid around the start point: checks sensor rotation, FOV and delay.
-          ctx.strokeStyle = "#fff8";
-          ctx.beginPath();
-          for (let g = -3; g <= 3; g += 0.5) (line([g, 0, -3], [g, 0, 3], 24), line([-3, 0, g], [3, 0, g], 24));
-          ctx.stroke();
-          if (f.state === "normal" && !anchor) anchor = f.hitTest(0.5, 0.5, w / h)[0]?.position ?? null;
-          const now = performance.now();
-          if (f.state === "normal" || f.state === "limited") tracked = now;
-          // Lost under 1 s (a pan, a quick cover): keep showing it, turning with the gyro from the last position.
-          if (anchor && f.state !== "initializing" && now - tracked < 1000) {
-            const e = 0.15, v = [...Array(8)].map((_, i) => [anchor[0] + (i & 1 ? e : -e), i & 4 ? 2 * e : 0, anchor[2] + (i & 2 ? e : -e)]);
-            ctx.strokeStyle = f.state === "normal" ? "#0f0" : "#fa0";
-            ctx.beginPath();
-            for (const [a, b] of [[0, 1], [1, 3], [3, 2], [2, 0], [4, 5], [5, 7], [7, 6], [6, 4], [0, 4], [1, 5], [2, 6], [3, 7]]) line(v[a], v[b]);
-            ctx.stroke();
-          }
-        }
-
-        const t = performance.now(), st = f.stats;
-        smooth("detect", st.detect);
-        smooth("fps", 1000 / (t - last));
-        last = t;
-        const split = [st.copy, ...st.split].map((v, i) => smooth(i, v).toFixed(1));
-        const pos = f.pose ? f.pose.position.map((x) => x.toFixed(2)).join(" ") : "";
-        hud.textContent = `${session.backend} ${w}x${h} fov ${FOV} delay ${DELAY} ${VISION ? "" : "SENSOR ONLY"}${RECORD ? ` REC ${acked}/${REC_FRAMES}${failed ? ` FAILED ${failed}` : ""}` : ""}\n`
-          + `sensor age ${s ? (f.time - DELAY - s.t).toFixed(0) : "-"} ms\n`
-          + `keypoints ${k.length / 4} (t ${st.threshold})  detect ${ema.detect.toFixed(1)} ms  fps ${ema.fps.toFixed(1)}\n`
-          + `copy ${split[0]}  gpu enc ${split[1]} wait ${split[2]}  track ${split[3]} ms\n`
-          + (split.length > 4 ? `wait: gpu ${split[4]} map ${split[5]} unpack ${split[6]}${LEVELS ? `  levels ${LEVELS}` : ""}\n` : "")
-          + (!s ? "no orientation sensor: tracking off"
-            : f.pose ? `${HINT[f.state] ?? f.state}  inliers ${f.inliers}  map ${f.mapSize}\npos ${pos}  scale ${f.scale ? `${f.scale.toFixed(2)} m/unit` : m ? "-" : "no motion sensor"}`
-            : "waiting for sensor…");
-      });
-      session.onError((e) => (hud.textContent = `frame error: ${e}`));
-    } catch (e) {
-      hud.textContent = `error: ${e}`;
-    }
+    let sent = 0, acked = 0, failed = 0;
+    const rec = Date.now();
+    session.onFrame((f) => {
+      const s = f.sensor, m = f.motion, { width: w, height: h } = f.image;
+      hud.note(`REC ${acked}/${REC_FRAMES}${failed ? ` FAILED ${failed}` : ""}`);
+      if (!s || sent >= REC_FRAMES) return;
+      // Same integer luma as the GPU pass, so the replay sees exactly what the tracker saw.
+      const rgba = f.image.getContext("2d").getImageData(0, 0, w, h).data, luma = new Uint8Array(w * h);
+      for (let i = 0; i < luma.length; i++) luma[i] = (77 * rgba[4 * i] + 150 * rgba[4 * i + 1] + 29 * rgba[4 * i + 2]) >> 8;
+      // Capture index + time travel with the frame: uploads can land out of order. Count acks, not sends.
+      fetch(`/rec?s=${rec}&i=${sent++}&t=${f.time}&w=${w}&h=${h}&a=${s.alpha}&b=${s.beta}&g=${s.gamma}&fov=${FOV}${m ? `&ax=${m.x}&ay=${m.y}&az=${m.z}` : ""}`, { method: "POST", body: luma })
+        .then((r) => (r.ok ? acked++ : failed++), () => failed++);
+    });
   };
 </script>

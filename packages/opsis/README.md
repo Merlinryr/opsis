@@ -35,7 +35,7 @@ engine.runRenderLoop(() => session.frame && updateCamera(camera, session.frame, 
 | Option | Default | |
 |---|---|---|
 | `mount` | none | Element the camera image fills. |
-| `background` | `"video"` | `"video"`: live `<video>`, full resolution, ~10 ms newer than the pose. `"tracked"`: the tracked frame, in sync with the pose, at `maxSide` resolution. |
+| `background` | `"tracked"` | `"tracked"`: the camera frame the pose was computed from, at camera resolution, so content stays locked to the image. `"video"`: the live `<video>`, 1–2 frames newer than the pose, so content lags the image while the phone moves (one less full-size copy per frame). |
 | `backend` | `"auto"` | `"webgpu"`, `"webgl"`. |
 | `fov` | `69` | Degrees across the long side (browsers expose no intrinsics). |
 | `sensorDelay` | `0` | ms the motion sensor leads the camera. |
@@ -75,6 +75,21 @@ engine.runRenderLoop(() => session.frame && updateCamera(camera, session.frame, 
 - A-Frame: `opsis/three` on `cameraEl.getObject3D("camera")`, with `camera="userHeight: 0"` and look-controls off.
 
 Adapters take structural types, so they work with any engine version and add no dependency.
+
+## Debug HUD
+`opsis/debug` (3.4 KB gzip, loaded only if you import it) draws tracking diagnostics over your scene and a benchmark panel.
+
+```js
+import { debug } from "opsis/debug";
+const hud = debug(session); // or debug(session, { corners: false, grid: true, panel: true, window: 120 })
+```
+
+- **Overlay:** detected corners coloured by pyramid level (cyan, purple, yellow, pink = fine to coarse), the floor grid (y = 0) tinted by tracking state (green normal, amber limited, red lost, grey initializing) and the world axes at the origin (x red, y green, z blue).
+- **Panel:** state, fps, detect time (mean, p95, max over the last `window` frames), the copy / GPU / track split, corners, inliers, map size, position, scale, sensor age. Tap it to collapse; buttons toggle the corners and the grid.
+- **Copy report:** the benchmark as JSON (device, backend, sizes, fps, per-stage ms, state shares) to the clipboard, and to the console.
+- `hud.note(text)` adds a line, `hud.report()` returns the JSON, `hud.toggle()` shows or hides it, `hud.dispose()` removes it.
+
+The examples load it lazily with `?debug` in the URL.
 
 ## Requirements
 HTTPS, a back camera, and `deviceorientation`. WebGPU when available, else WebGL2.

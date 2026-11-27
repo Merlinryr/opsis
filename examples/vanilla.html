@@ -18,7 +18,9 @@
 
   document.getElementById("start").onclick = async (e) => {
     e.target.hidden = true;
-    const session = await start({ mount: document.getElementById("app") }).catch((err) => (status.textContent = err));
+    const session = await start({ mount: document.getElementById("app") }).catch((err) => void (status.textContent = err));
+    if (!session) return;
+    if (new URLSearchParams(location.search).has("debug")) import("../packages/opsis/dist/debug.js").then(({ debug }) => debug(session));
     session.onFrame((f) => {
       const W = (canvas.width = innerWidth * devicePixelRatio), H = (canvas.height = innerHeight * devicePixelRatio), aspect = W / H;
       status.textContent = `${session.backend} · ${f.state} · map ${f.mapSize}`;

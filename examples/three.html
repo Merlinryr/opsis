@@ -26,9 +26,11 @@
 
   document.getElementById("start").onclick = async (e) => {
     e.target.hidden = true;
-    // ?background=tracked draws the tracked frame in sync with the pose instead of the live video.
-    const background = new URLSearchParams(location.search).get("background") ?? "video";
-    const session = await start({ mount: document.getElementById("app"), background }).catch((err) => (status.textContent = err));
+    // ?background=video shows the live video instead: lower latency image, but content lags it while moving.
+    const background = new URLSearchParams(location.search).get("background") ?? "tracked";
+    const session = await start({ mount: document.getElementById("app"), background }).catch((err) => void (status.textContent = err));
+    if (!session) return;
+    if (new URLSearchParams(location.search).has("debug")) import("../packages/opsis/dist/debug.js").then(({ debug }) => debug(session));
     const recenter = document.getElementById("recenter");
     recenter.hidden = false;
     recenter.onclick = () => (session.recenter(), (cube.visible = false));

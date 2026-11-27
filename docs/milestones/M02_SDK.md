@@ -28,7 +28,7 @@
     only)                (same)
 ```
 - Rust sees pixels, timestamps and sensor numbers only. Camera, permissions, sensors and orientation are TS.
-- The SDK runs vision on its own private GPU context. The camera image (live `<video>`, or with `background: "tracked"` the tracked frame in sync with the pose) sits under a transparent engine canvas with `object-fit: cover`; `fovY`, `projectionMatrix` and `hitTest` match that crop.
+- The SDK runs vision on its own private GPU context. The camera image (by default the tracked frame at camera resolution, in sync with the pose; `background: "video"` for the live `<video>`) sits under a transparent engine canvas with `object-fit: cover`; `fovY`, `projectionMatrix` and `hitTest` match that crop.
 - Push (`onFrame`) and pull (`session.frame`) both work, so engines with their own render loop (Babylon, PlayCanvas) need no callback.
 - `opsis` owns the frame loop and timing (one source of truth). Adapters only copy the pose and field of view.
 - One zero-dependency package with subpath entries (`opsis/three`, `opsis/babylon`) instead of one package per engine: each adapter is ~20 lines, typed structurally (no engine import).
@@ -49,8 +49,8 @@ crates/
     tests/replay.rs
   wasm/      opsis (wasm-bindgen): tracker.rs (Tracker), parity.rs (cargo feature `parity`), gpu.rs, webgl.rs, webgpu.rs
 packages/
-  opsis/     npm `opsis`: src/index.ts (start, Session, Frame), three.ts, babylon.ts, playcanvas.ts;
-             test/frame.test.mjs; README.md (API); wasm/ and dist/ are build output (gitignored)
+  opsis/     npm `opsis`: src/index.ts (start, Session, Frame), three.ts, babylon.ts, playcanvas.ts, debug.ts (HUD);
+             test/{frame,debug}.test.mjs; README.md (API); wasm/ and dist/ are build output (gitignored)
 examples/    vanilla, webgl, webgpu, three, babylon, playcanvas, aframe (.html), style.css,
              camera.html (diagnostic HUD, recording), index.html (links + parity, needs build-web -Parity)
 tools/       serve.mjs, phone.ps1, build-web.ps1, replay-seeds.ps1
@@ -102,3 +102,10 @@ recordings/  docs/   (unchanged)
   - Checked: `pnpm test` (4 tests, adds hit type and distance, no hit looking up); in the pane with a fake camera: tracked background canvas 640×360, no frames while paused and video paused, frames again after resume, stop empties the mount. Not checked: `recenter` (a static fake scene re-seeds to the same map), the PlayCanvas and A-Frame pages rendering, anything on a phone.
 - 2026-11-27: Root `README.md` (goals, quick start, architecture flow, repository map, dev commands, status). Redundant comments removed from the SDK and examples; public API TSDoc kept (units and semantics show in IDEs).
 - 2026-11-27: `docs/research` is now gitignored and was removed from the whole git history (force-pushed `main`), so the research links above resolve locally only.
+- 2026-11-27: Debug HUD, `opsis/debug` (3.4 KB gzip, separate entry, so apps that do not import it pay nothing). `debug(session, { mount?, corners?, grid?, panel?, window? })` → `{ note, report, toggle, dispose }`.
+  - Overlay: corners coloured by pyramid level, floor grid tinted by tracking state, world axes at the origin, all mapped through the same `object-fit: cover` crop and `projectionMatrix` as the app.
+  - Panel: state, fps, detect mean / p95 / max over a rolling 120-frame window, copy / GPU / track split (WebGPU wait split too), corners, inliers, map, position, scale, sensor age. Tap to collapse; corner and grid toggles; Copy report puts a JSON benchmark (device, backend, sizes, fps, per-stage ms, state shares) on the clipboard and the console.
+  - `session.mount` added so the HUD finds the app's container. `camera.html` rebuilt on the HUD with `background: "tracked"` (its own drawing code removed; recording kept, shown with `hud.note`). Every example takes `?debug`.
+  - Examples now stop cleanly when `start()` rejects (they used to call `onFrame` on the error).
+  - Checked: `pnpm test` (5, adds the window statistics); in the pane with a fake camera the panel, level-coloured corners and grid render on `camera.html`. Not checked: the axes (origin out of view in that test), Copy report, anything on a phone.
+- 2026-11-27: Owner, iPhone: content slid in the engine examples, not in the old `camera.html`. Cause: the examples showed the live `<video>` (default `background: "video"`), which is 1–2 frames newer than the pose (two frames in flight plus detect); the old page drew the tracked frame. Fix: `"tracked"` is now the default and copies the same video frame at camera resolution (1280×720 here) next to the 640 px tracking copy, so image and pose always match without the blur. The extra copy shows in the HUD's `copy` time. Checked in the pane with a fake camera (background canvas 1280×720 holds the tracked pixels). Owner, iPhone: the cube no longer slides.

@@ -18,8 +18,8 @@ export interface StartOptions {
   /** Element the camera image fills (`object-fit: cover`), under a transparent engine canvas. */
   mount?: HTMLElement;
   /**
-   * `"video"`: the live `<video>`, full resolution, ~one detect (~10 ms) newer than the pose.
-   * `"tracked"`: the tracked frame, drawn in sync with the pose, at `maxSide` resolution.
+   * `"tracked"` (default): the camera frame the pose was computed from, at camera resolution, so content never slides.
+   * `"video"`: the live `<video>`: 1–2 frames newer than the pose, so content lags the image while the phone moves.
    */
   background?: "video" | "tracked";
   backend?: "auto" | "webgpu" | "webgl";
@@ -48,6 +48,8 @@ export interface Pose {
 
 export interface Session {
   readonly video: HTMLVideoElement;
+  /** The `mount` option, or null. */
+  readonly mount: HTMLElement | null;
   readonly backend: "webgpu" | "webgl2";
   readonly status: SessionStatus;
   /** Latest frame, for apps that render in their own loop. `image` is not valid outside `onFrame`. */
@@ -220,7 +222,7 @@ async function run(o: StartOptions, permission: Promise<string>): Promise<Sessio
   video.srcObject = stream;
   await video.play();
   const cover = "position:absolute;inset:0;width:100%;height:100%;object-fit:cover";
-  const tracked = o.background === "tracked" ? document.createElement("canvas") : null;
+  const tracked = o.background !== "video" ? document.createElement("canvas") : null;
   const bg = tracked ?? video;
   bg.style.cssText = cover;
   o.mount?.prepend(bg);
@@ -232,7 +234,10 @@ async function run(o: StartOptions, permission: Promise<string>): Promise<Sessio
   // Two frames in flight, one canvas each: the next frame is copied and submitted while this one waits
   // on the GPU. No willReadFrequently: it keeps the canvas on the CPU.
   const slots = [0, 1].map(() => new OffscreenCanvas(w, h).getContext("2d")!);
-  const bgCtx = tracked && Object.assign(tracked, { width: w, height: h }).getContext("2d")!;
+  // The pose belongs to a frame 1-2 frames old: the background shows that same frame, copied at full size with it.
+  const [vw, vh] = [video.videoWidth, video.videoHeight];
+  const shown = tracked ? [0, 1].map(() => new OffscreenCanvas(vw, vh).getContext("2d")!) : [];
+  const bgCtx = tracked && Object.assign(tracked, { width: vw, height: vh }).getContext("2d")!;
   const frameCbs = new Set<(f: Frame) => void>(), statusCbs = new Set<(s: SessionStatus) => void>(), errorCbs = new Set<(e: unknown) => void>();
   let inFlight = 0, slot = 0, gotVfc = false, vfcGaveUp = false, latest: Frame | null = null;
   let status: SessionStatus = "running", userPaused = false;
@@ -248,10 +253,11 @@ async function run(o: StartOptions, permission: Promise<string>): Promise<Sessio
     next();
     if (inFlight >= 2) return;
     inFlight++;
-    const ctx = slots[slot++ & 1];
+    const ctx = slots[slot & 1], shot = shown[slot++ & 1];
     try {
       const tc = performance.now();
       ctx.drawImage(video, 0, 0, w, h);
+      shot?.drawImage(video, 0, 0);
       const time = meta?.captureTime ?? meta?.expectedDisplayTime ?? now;
       const s = nearest(orient, time - sensorDelay), m = nearest(motion, time - sensorDelay);
       const t0 = performance.now();
@@ -259,7 +265,7 @@ async function run(o: StartOptions, permission: Promise<string>): Promise<Sessio
       if (session.status === "stopped") return;
       const f = new Frame(tracker.pose(), time, kps, ctx.canvas, s, m, { copy: t0 - tc, detect: performance.now() - t0, split: tracker.split_ms(), threshold: tracker.threshold() });
       latest = f;
-      bgCtx?.drawImage(ctx.canvas, 0, 0);
+      if (shot) bgCtx!.drawImage(shot.canvas, 0, 0);
       for (const cb of frameCbs) cb(f);
     } catch (e) {
       for (const cb of errorCbs) cb(e);
@@ -294,6 +300,7 @@ async function run(o: StartOptions, permission: Promise<string>): Promise<Sessio
   const sub = <T>(set: Set<T>) => (cb: T) => (set.add(cb), () => void set.delete(cb));
   const session: Session = {
     video,
+    mount: o.mount ?? null,
     backend: webgpu ? "webgpu" : "webgl2",
     get status() { return status; },
     get frame() { return latest; },
